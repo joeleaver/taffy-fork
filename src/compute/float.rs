@@ -42,7 +42,8 @@ pub struct ContentSlot {
     pub y: f32,
     /// The width of the slot
     pub width: f32,
-    /// The height of the slot
+    /// The height of the slot: to the end of the segment it starts in, where the room
+    /// beside the floats next changes (`f32::INFINITY` when no float is beside it)
     pub height: f32,
 }
 
@@ -619,12 +620,13 @@ impl FloatContext {
             Some(segment) => {
                 let inset_left = segment.insets[0].max(containing_block_insets[0]);
                 let inset_right = segment.insets[1].max(containing_block_insets[1]);
+                let y = segment.y.start.max(min_y);
                 ContentSlot {
                     segment_id: Some(start_idx),
                     x: inset_left,
-                    y: segment.y.start.max(min_y),
+                    y,
                     width: self.available_width - inset_left - inset_right,
-                    height: f32::INFINITY,
+                    height: segment.y.end - y,
                 }
             }
             None => ContentSlot {

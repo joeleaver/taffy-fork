@@ -102,3 +102,20 @@ fn a_leaf_with_no_float_beside_it_is_not_handed_a_context_with_floats() {
         assert_eq!((x, width), (0.0, 300.0));
     }
 }
+
+#[test]
+fn a_content_slot_ends_where_the_room_beside_the_floats_changes() {
+    let (mut tree, root, _) = tree();
+    let heights = RefCell::new(Vec::new());
+    tree.compute_layout_with_block_measure(root, Size::MAX_CONTENT, |inputs, _, _, style, ctx| {
+        if let Some(ctx) = ctx {
+            heights.borrow_mut().push(ctx.find_content_slot(10.0, Clear::None, None).height);
+        }
+        compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size { width: 0.0, height: 20.0 })
+    })
+    .unwrap();
+    let heights = heights.into_inner();
+    assert!(!heights.is_empty());
+    // From y 10 to the float's bottom at 50.
+    assert!(heights.iter().all(|&h| h == 40.0), "{heights:?}");
+}
