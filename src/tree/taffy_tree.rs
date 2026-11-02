@@ -264,9 +264,68 @@ impl<NodeContext> PrintTree for TaffyTree<NodeContext> {
 /// View over the Taffy tree that holds the tree itself along with a reference to the context
 /// and implements LayoutTree. This allows the context to be stored outside of the TaffyTree struct
 /// which makes the lifetimes of the context much more flexible.
+/// The measure function a [`TaffyView`] calls for a leaf: either a plain one
+/// ([`TaffyTree::compute_layout_with_measure`]) or one that is also handed the
+/// [`BlockContext`] of the block formatting context the leaf is laid out in
+/// ([`TaffyTree::compute_layout_with_block_measure`]), which an inline
+/// formatting context needs to wrap its lines around floats.
+pub(crate) trait ViewMeasure<NodeContext> {
+    /// Measure the leaf `node_id`
+    fn measure(
+        &mut self,
+        inputs: LayoutInput,
+        node_id: NodeId,
+        context: Option<&mut NodeContext>,
+        style: &Style,
+        #[cfg(feature = "block_layout")] block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> LayoutOutput;
+}
+
+/// A measure function that is not handed the block context
+pub(crate) struct PlainMeasure<F>(pub(crate) F);
+
+impl<NodeContext, F> ViewMeasure<NodeContext> for PlainMeasure<F>
+where
+    F: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+{
+    #[inline(always)]
+    fn measure(
+        &mut self,
+        inputs: LayoutInput,
+        node_id: NodeId,
+        context: Option<&mut NodeContext>,
+        style: &Style,
+        #[cfg(feature = "block_layout")] _block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> LayoutOutput {
+        (self.0)(inputs, node_id, context, style)
+    }
+}
+
+/// A measure function that is handed the block context
+#[cfg(feature = "block_layout")]
+pub(crate) struct BlockMeasure<F>(pub(crate) F);
+
+#[cfg(feature = "block_layout")]
+impl<NodeContext, F> ViewMeasure<NodeContext> for BlockMeasure<F>
+where
+    F: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style, Option<&mut BlockContext<'_>>) -> LayoutOutput,
+{
+    #[inline(always)]
+    fn measure(
+        &mut self,
+        inputs: LayoutInput,
+        node_id: NodeId,
+        context: Option<&mut NodeContext>,
+        style: &Style,
+        block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> LayoutOutput {
+        (self.0)(inputs, node_id, context, style, block_ctx)
+    }
+}
+
 pub(crate) struct TaffyView<'t, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     /// A reference to the TaffyTree
     pub(crate) taffy: &'t mut TaffyTree<NodeContext>,
@@ -276,7 +335,7 @@ where
 
 impl<NodeContext, MeasureFunction> TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     #[inline(always)]
     /// Unified implementation that both `LayoutPartialTree::compute_child_layout`
@@ -294,45 +353,74 @@ where
             return compute_hidden_layout(self, node_id);
         }
 
+        // A box laid out beside floats of its block formatting context depends on where those
+        // floats are, which the cache key does not say: a paragraph would be handed the lines it
+        // broke around floats that have since moved. Such a box is computed afresh each time.
+        #[cfg(feature = "float_layout")]
+        if block_ctx.as_deref().is_some_and(|ctx| ctx.has_active_floats(0.0)) {
+            return self.compute_child_layout_uncached(node_id, inputs, block_ctx);
+        }
+
         // We run the following wrapped in "compute_cached_layout", which will check the cache for an entry matching the node and inputs and:
         //   - Return that entry if exists
         //   - Else call the passed closure (below) to compute the result
         //
         // If there was no cache match and a new result needs to be computed then that result will be added to the cache
         compute_cached_layout(self, node_id, inputs, |tree, node_id, inputs| {
-            let display_mode = tree.taffy.nodes[node_id.into()].style.display;
-            let has_children = tree.child_count(node_id) > 0;
-
-            debug_log!(display_mode);
-            debug_log_node!(inputs);
-
-            // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-            match (display_mode, has_children) {
-                (Display::None, _) => compute_hidden_layout(tree, node_id),
+            tree.compute_child_layout_uncached(
+                node_id,
+                inputs,
                 #[cfg(feature = "block_layout")]
-                (Display::Block, true) => compute_block_layout(tree, node_id, inputs, block_ctx),
-                #[cfg(feature = "block_layout")]
-                (Display::FlowRoot, true) => compute_block_layout(tree, node_id, inputs, None),
-                #[cfg(feature = "flexbox")]
-                (Display::Flex, true) => compute_flexbox_layout(tree, node_id, inputs),
-                #[cfg(feature = "grid")]
-                (Display::Grid, true) => compute_grid_layout(tree, node_id, inputs),
-                (_, false) => {
-                    let node_key = node_id.into();
-                    let style = &tree.taffy.nodes[node_key].style;
-                    let has_context = tree.taffy.nodes[node_key].has_context;
-                    let node_context = has_context.then(|| tree.taffy.node_context_data.get_mut(node_key)).flatten();
-                    (tree.measure_function)(inputs, node_id, node_context, style)
-                }
-            }
+                block_ctx,
+            )
         })
+    }
+
+    /// Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
+    fn compute_child_layout_uncached(
+        &mut self,
+        node_id: NodeId,
+        inputs: LayoutInput,
+        #[cfg(feature = "block_layout")] block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> LayoutOutput {
+        let display_mode = self.taffy.nodes[node_id.into()].style.display;
+        let has_children = self.child_count(node_id) > 0;
+
+        debug_log!(display_mode);
+        debug_log_node!(inputs);
+
+        match (display_mode, has_children) {
+            (Display::None, _) => compute_hidden_layout(self, node_id),
+            #[cfg(feature = "block_layout")]
+            (Display::Block, true) => compute_block_layout(self, node_id, inputs, block_ctx),
+            #[cfg(feature = "block_layout")]
+            (Display::FlowRoot, true) => compute_block_layout(self, node_id, inputs, None),
+            #[cfg(feature = "flexbox")]
+            (Display::Flex, true) => compute_flexbox_layout(self, node_id, inputs),
+            #[cfg(feature = "grid")]
+            (Display::Grid, true) => compute_grid_layout(self, node_id, inputs),
+            (_, false) => {
+                let node_key = node_id.into();
+                let style = &self.taffy.nodes[node_key].style;
+                let has_context = self.taffy.nodes[node_key].has_context;
+                let node_context = has_context.then(|| self.taffy.node_context_data.get_mut(node_key)).flatten();
+                self.measure_function.measure(
+                    inputs,
+                    node_id,
+                    node_context,
+                    style,
+                    #[cfg(feature = "block_layout")]
+                    block_ctx,
+                )
+            }
+        }
     }
 }
 
 // TraversePartialTree impl for TaffyView
 impl<NodeContext, MeasureFunction> TraversePartialTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     type ChildIter<'a>
         = TaffyTreeChildIter<'a>
@@ -357,14 +445,14 @@ where
 
 // TraverseTree impl for TaffyView
 impl<NodeContext, MeasureFunction> TraverseTree for TaffyView<'_, NodeContext, MeasureFunction> where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput
+    MeasureFunction: ViewMeasure<NodeContext>
 {
 }
 
 // LayoutPartialTree impl for TaffyView
 impl<NodeContext, MeasureFunction> LayoutPartialTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     type CoreContainerStyle<'a>
         = &'a Style
@@ -401,7 +489,7 @@ where
 
 impl<NodeContext, MeasureFunction> CacheTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     fn cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<LayoutOutput> {
         self.taffy.nodes[node_id.into()].cache.get(input)
@@ -419,7 +507,7 @@ where
 #[cfg(feature = "block_layout")]
 impl<NodeContext, MeasureFunction> LayoutBlockContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     type BlockContainerStyle<'a>
         = &'a Style
@@ -454,7 +542,7 @@ where
 #[cfg(feature = "flexbox")]
 impl<NodeContext, MeasureFunction> LayoutFlexboxContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     type FlexboxContainerStyle<'a>
         = &'a Style
@@ -479,7 +567,7 @@ where
 #[cfg(feature = "grid")]
 impl<NodeContext, MeasureFunction> LayoutGridContainer for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     type GridContainerStyle<'a>
         = &'a Style
@@ -510,7 +598,7 @@ where
 // RoundTree impl for TaffyView
 impl<NodeContext, MeasureFunction> RoundTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
-    MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
+    MeasureFunction: ViewMeasure<NodeContext>,
 {
     #[inline(always)]
     fn get_unrounded_layout(&self, node: NodeId) -> Layout {
@@ -904,7 +992,37 @@ impl<NodeContext> TaffyTree<NodeContext> {
         MeasureFunction: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
     {
         let use_rounding = self.config.use_rounding;
-        let mut taffy_view = TaffyView { taffy: self, measure_function };
+        let mut taffy_view = TaffyView { taffy: self, measure_function: PlainMeasure(measure_function) };
+        compute_root_layout(&mut taffy_view, node_id, available_space);
+        if use_rounding {
+            round_layout(&mut taffy_view, node_id);
+        }
+        Ok(())
+    }
+
+    /// Updates the stored layout of the provided `node` and its children, like
+    /// [`Self::compute_layout_with_measure`], with a measure function that is also handed the
+    /// [`BlockContext`] a leaf is laid out in: `Some` for a leaf that is an in-flow child of a
+    /// block container in the same block formatting context. Through it the leaf can find the
+    /// room left beside the context's floats ([`BlockContext::find_content_slot`]) and place
+    /// floats of its own ([`BlockContext::place_floated_box`]). Coordinates are relative to the
+    /// leaf's border box.
+    ///
+    /// A leaf (and any block container) laid out while floats of its context are active is not
+    /// answered from the layout cache, since where those floats are is not part of its key.
+    #[cfg(feature = "block_layout")]
+    pub fn compute_layout_with_block_measure<MeasureFunction>(
+        &mut self,
+        node_id: NodeId,
+        available_space: Size<AvailableSpace>,
+        measure_function: MeasureFunction,
+    ) -> Result<(), TaffyError>
+    where
+        MeasureFunction:
+            FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style, Option<&mut BlockContext<'_>>) -> LayoutOutput,
+    {
+        let use_rounding = self.config.use_rounding;
+        let mut taffy_view = TaffyView { taffy: self, measure_function: BlockMeasure(measure_function) };
         compute_root_layout(&mut taffy_view, node_id, available_space);
         if use_rounding {
             round_layout(&mut taffy_view, node_id);
@@ -930,7 +1048,11 @@ impl<NodeContext> TaffyTree<NodeContext> {
     pub(crate) fn as_layout_tree(&mut self) -> impl LayoutPartialTree + CacheTree + '_ {
         TaffyView {
             taffy: self,
-            measure_function: |inputs, _, _, style| compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO),
+            measure_function: PlainMeasure(
+                |inputs: LayoutInput, _: NodeId, _: Option<&mut NodeContext>, style: &Style| {
+                    compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO)
+                },
+            ),
         }
     }
 }
