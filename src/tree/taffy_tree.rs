@@ -261,15 +261,17 @@ impl<NodeContext> PrintTree for TaffyTree<NodeContext> {
     }
 }
 
-/// View over the Taffy tree that holds the tree itself along with a reference to the context
-/// and implements LayoutTree. This allows the context to be stored outside of the TaffyTree struct
-/// which makes the lifetimes of the context much more flexible.
 /// The measure function a [`TaffyView`] calls for a leaf: either a plain one
 /// ([`TaffyTree::compute_layout_with_measure`]) or one that is also handed the
 /// [`BlockContext`] of the block formatting context the leaf is laid out in
 /// ([`TaffyTree::compute_layout_with_block_measure`]), which an inline
 /// formatting context needs to wrap its lines around floats.
 pub(crate) trait ViewMeasure<NodeContext> {
+    /// Whether leaf `leaf` (with `context`) places the floats right before it (see
+    /// `PendingFloat`)
+    #[cfg(feature = "float_layout")]
+    fn leaf_places_floats(&self, leaf: NodeId, context: Option<&NodeContext>) -> bool;
+
     /// Measure the leaf `node_id`
     fn measure(
         &mut self,
@@ -288,6 +290,11 @@ impl<NodeContext, F> ViewMeasure<NodeContext> for PlainMeasure<F>
 where
     F: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style) -> LayoutOutput,
 {
+    #[cfg(feature = "float_layout")]
+    fn leaf_places_floats(&self, _leaf: NodeId, _context: Option<&NodeContext>) -> bool {
+        false
+    }
+
     #[inline(always)]
     fn measure(
         &mut self,
@@ -301,15 +308,22 @@ where
     }
 }
 
-/// A measure function that is handed the block context
+/// A measure function that is handed the block context, with which leaves place the floats
+/// right before them
 #[cfg(feature = "block_layout")]
-pub(crate) struct BlockMeasure<F>(pub(crate) F);
+pub(crate) struct BlockMeasure<F, P>(pub(crate) F, pub(crate) P);
 
 #[cfg(feature = "block_layout")]
-impl<NodeContext, F> ViewMeasure<NodeContext> for BlockMeasure<F>
+impl<NodeContext, F, P> ViewMeasure<NodeContext> for BlockMeasure<F, P>
 where
     F: FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style, Option<&mut BlockContext<'_>>) -> LayoutOutput,
+    P: Fn(NodeId, Option<&NodeContext>) -> bool,
 {
+    #[cfg(feature = "float_layout")]
+    fn leaf_places_floats(&self, leaf: NodeId, context: Option<&NodeContext>) -> bool {
+        (self.1)(leaf, context)
+    }
+
     #[inline(always)]
     fn measure(
         &mut self,
@@ -323,6 +337,9 @@ where
     }
 }
 
+/// View over the Taffy tree that holds the tree itself along with a reference to the context
+/// and implements LayoutTree. This allows the context to be stored outside of the TaffyTree struct
+/// which makes the lifetimes of the context much more flexible.
 pub(crate) struct TaffyView<'t, NodeContext, MeasureFunction>
 where
     MeasureFunction: ViewMeasure<NodeContext>,
@@ -357,7 +374,7 @@ where
         // floats are, which the cache key does not say: a paragraph would be handed the lines it
         // broke around floats that have since moved. Such a box is computed afresh each time.
         #[cfg(feature = "float_layout")]
-        if block_ctx.as_deref().is_some_and(|ctx| ctx.has_active_floats(0.0)) {
+        if block_ctx.as_deref().is_some_and(|ctx| ctx.has_active_floats(0.0) || !ctx.pending_floats().is_empty()) {
             return self.compute_child_layout_uncached(node_id, inputs, block_ctx);
         }
 
@@ -536,6 +553,13 @@ where
         block_ctx: Option<&mut BlockContext<'_>>,
     ) -> LayoutOutput {
         self.compute_child_layout(node_id, inputs, block_ctx)
+    }
+
+    #[cfg(feature = "float_layout")]
+    fn leaf_places_preceding_floats(&self, leaf: NodeId) -> bool {
+        let key = leaf.into();
+        let context = if self.taffy.nodes[key].has_context { self.taffy.node_context_data.get(key) } else { None };
+        self.measure_function.leaf_places_floats(leaf, context)
     }
 }
 
@@ -1010,19 +1034,26 @@ impl<NodeContext> TaffyTree<NodeContext> {
     ///
     /// A leaf (and any block container) laid out while floats of its context are active is not
     /// answered from the layout cache, since where those floats are is not part of its key.
+    ///
+    /// `places_floats` says which leaves place the floats right before them, at the height they
+    /// choose (`BlockContext::pending_floats`, [`crate::PendingFloat`]): an inline formatting
+    /// context places a float at the top of the line it stands in. Floats before any other leaf
+    /// are placed where they stand.
     #[cfg(feature = "block_layout")]
-    pub fn compute_layout_with_block_measure<MeasureFunction>(
+    pub fn compute_layout_with_block_measure<MeasureFunction, PlacesFloats>(
         &mut self,
         node_id: NodeId,
         available_space: Size<AvailableSpace>,
         measure_function: MeasureFunction,
+        places_floats: PlacesFloats,
     ) -> Result<(), TaffyError>
     where
         MeasureFunction:
             FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style, Option<&mut BlockContext<'_>>) -> LayoutOutput,
+        PlacesFloats: Fn(NodeId, Option<&NodeContext>) -> bool,
     {
         let use_rounding = self.config.use_rounding;
-        let mut taffy_view = TaffyView { taffy: self, measure_function: BlockMeasure(measure_function) };
+        let mut taffy_view = TaffyView { taffy: self, measure_function: BlockMeasure(measure_function, places_floats) };
         compute_root_layout(&mut taffy_view, node_id, available_space);
         if use_rounding {
             round_layout(&mut taffy_view, node_id);

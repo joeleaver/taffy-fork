@@ -38,6 +38,8 @@ pub(crate) mod grid;
 
 pub use leaf::compute_leaf_layout;
 
+#[cfg(all(feature = "block_layout", feature = "float_layout"))]
+pub use self::block::PendingFloat;
 #[cfg(feature = "block_layout")]
 pub use self::block::{compute_block_layout, BlockContext, BlockFormattingContext};
 

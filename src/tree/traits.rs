@@ -301,6 +301,16 @@ pub trait LayoutBlockContainer: LayoutPartialTree {
     /// Get the child's styles
     fn get_block_child_style(&self, child_node_id: NodeId) -> Self::BlockItemStyle<'_>;
 
+    /// Whether the floats right before the childless in-flow child `leaf`, in the same block
+    /// formatting context, are left for `leaf` to place (see [`crate::PendingFloat`]) rather than
+    /// placed where they stand. `false` unless the tree says otherwise, as
+    /// [`crate::TaffyTree::compute_layout_with_block_measure`]'s `places_floats` does.
+    #[cfg(feature = "float_layout")]
+    fn leaf_places_preceding_floats(&self, leaf: NodeId) -> bool {
+        let _ = leaf;
+        false
+    }
+
     /// Compute the specified node's size or full layout given the specified constraints
     #[cfg(feature = "block_layout")]
     fn compute_block_child_layout(

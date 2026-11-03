@@ -54,6 +54,8 @@ impl BlockFormattingContext {
             adjoining_floats: [false, false],
             #[cfg(feature = "float_layout")]
             top_adjoining_floats: None,
+            #[cfg(feature = "float_layout")]
+            pending_floats: Vec::new(),
         }
     }
 }
@@ -87,6 +89,39 @@ pub struct BlockContext<'bfc> {
     /// `None` if no in-flow content has been committed yet.
     #[cfg(feature = "float_layout")]
     top_adjoining_floats: Option<[bool; 2]>,
+    /// Floats sized but not yet placed, handed to this block (a leaf) to place
+    /// itself: see [`PendingFloat`].
+    #[cfg(feature = "float_layout")]
+    pending_floats: Vec<PendingFloat>,
+}
+
+/// A float that its container sized but left for the leaf right after it to
+/// place, at the height the leaf chooses: an inline formatting context places
+/// a float at the top of the line it stands in (CSS 2.2 §9.5.1), which only
+/// the line breaker knows. Handed over only when the tree opts in
+/// ([`crate::LayoutBlockContainer::leaves_place_preceding_floats`]); one the
+/// leaf leaves unplaced is placed after it, at the leaf's top.
+#[cfg(feature = "float_layout")]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingFloat {
+    /// The floated box
+    pub node_id: NodeId,
+    /// Its margin box
+    pub size: Size<f32>,
+    /// Which side it floats to
+    pub direction: FloatDirection,
+    /// Its `clear`
+    pub clear: Clear,
+    /// Where the leaf placed its margin box, in the leaf's coordinates
+    placed: Option<Point<f32>>,
+}
+
+#[cfg(feature = "float_layout")]
+impl PendingFloat {
+    /// Where the leaf placed the float's margin box, if it has
+    pub fn placed(&self) -> Option<Point<f32>> {
+        self.placed
+    }
 }
 
 impl BlockContext<'_> {
@@ -106,6 +141,8 @@ impl BlockContext<'_> {
             adjoining_floats: self.adjoining_floats,
             #[cfg(feature = "float_layout")]
             top_adjoining_floats: None,
+            #[cfg(feature = "float_layout")]
+            pending_floats: Vec::new(),
         }
     }
 
@@ -179,6 +216,25 @@ impl BlockContext<'_> {
         slot.y -= self.y_offset;
         slot.x -= self.insets[0];
         slot
+    }
+
+    /// The floats the container sized and left for this block to place (see [`PendingFloat`]),
+    /// in source order
+    pub fn pending_floats(&self) -> &[PendingFloat] {
+        &self.pending_floats
+    }
+
+    /// Place pending float `index` as high as it fits at or below `min_y` (this block's
+    /// coordinates, like [`Self::place_floated_box`]'s) and return its margin box's position.
+    /// A float already placed keeps its first position.
+    pub fn place_pending_float(&mut self, index: usize, min_y: f32) -> Point<f32> {
+        let float = self.pending_floats[index];
+        if let Some(at) = float.placed {
+            return at;
+        }
+        let at = self.place_floated_box(float.size, min_y, float.direction, float.clear, false);
+        self.pending_floats[index].placed = Some(at);
+        at
     }
 
     /// Search for a space suitable for laying out a box that establishes an independent
@@ -1020,7 +1076,37 @@ fn perform_final_layout_on_in_flow_children(
     #[cfg(not(feature = "float_layout"))]
     let has_active_floats = false;
 
-    for item in items.iter_mut() {
+    // Floats left for the leaf right after them to place (`PendingFloat`): which ones, the
+    // ones waiting for their leaf (with their margins, and where and how they would have been
+    // placed where they stand), and the positions to write back once placed.
+    #[cfg(feature = "float_layout")]
+    let defer_float: Vec<bool> = if items.iter().any(|item| item.float.float_direction().is_some()) {
+        let mut defer = vec![false; items.len()];
+        let mut next_places = false;
+        for (index, item) in items.iter().enumerate().rev() {
+            if item.position == Position::Absolute {
+                continue;
+            }
+            if item.float.float_direction().is_some() {
+                defer[index] = next_places;
+                continue;
+            }
+            next_places = item.is_in_same_bfc
+                && tree.child_count(item.node_id) == 0
+                && tree.leaf_places_preceding_floats(item.node_id);
+        }
+        defer
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "float_layout")]
+    let mut waiting_floats: Vec<(usize, PendingFloat, Rect<f32>, f32, bool)> = Vec::new();
+    #[cfg(feature = "float_layout")]
+    let mut float_locations: Vec<(usize, Point<f32>)> = Vec::new();
+
+    for (item_index, item) in items.iter_mut().enumerate() {
+        #[cfg(not(feature = "float_layout"))]
+        let _ = item_index;
         if item.position == Position::Absolute {
             let x = match direction {
                 Direction::Ltr => resolved_content_box_inset.left,
@@ -1088,6 +1174,36 @@ fn perform_final_layout_on_in_flow_children(
                 } else {
                     committed_y_offset + active_collapsible_margin_set.resolve()
                 };
+
+                // Left for the leaf after it to place: sized now, positioned once the leaf
+                // has placed it (or, if it does not, right after the leaf, where it stands).
+                if defer_float.get(item_index).copied().unwrap_or(false) {
+                    waiting_floats.push((
+                        item_index,
+                        PendingFloat {
+                            node_id: item.node_id,
+                            size: margin_box,
+                            direction: float_direction,
+                            clear: item.clear,
+                            placed: None,
+                        },
+                        item_non_auto_margin,
+                        y_offset_for_float,
+                        adjoins_unresolved_strut,
+                    ));
+                    item.final_layout = Some(Layout {
+                        order: item.order,
+                        size: item_layout.size,
+                        #[cfg(feature = "content_size")]
+                        scrollable_overflow_rect: item_layout.scrollable_overflow_rect,
+                        scrollbar_size,
+                        location: Point::ZERO,
+                        padding: item.padding,
+                        border: item.border,
+                        margin: item_non_auto_margin,
+                    });
+                    continue;
+                }
 
                 let mut location = block_ctx.place_floated_box(
                     margin_box,
@@ -1301,9 +1417,18 @@ fn perform_final_layout_on_in_flow_children(
                 let insets = [inset_left, inset_right];
 
                 // Compute child layout
-                let mut child_block_ctx =
-                    block_ctx.sub_context((y_offset_for_absolute + item_non_auto_margin.top).max(clear_pos), insets);
+                let child_y = (y_offset_for_absolute + item_non_auto_margin.top).max(clear_pos);
+                let mut child_block_ctx = block_ctx.sub_context(child_y, insets);
+                #[cfg(feature = "float_layout")]
+                let handed = core::mem::take(&mut waiting_floats);
+                #[cfg(feature = "float_layout")]
+                {
+                    child_block_ctx.pending_floats = handed.iter().map(|waiting| waiting.1).collect();
+                }
                 let output = tree.compute_block_child_layout(item.node_id, inputs, Some(&mut child_block_ctx));
+                #[cfg(feature = "float_layout")]
+                let placed: Vec<Option<Point<f32>>> =
+                    child_block_ctx.pending_floats.iter().map(|float| float.placed).collect();
 
                 // Extract float contribution from child block context
                 #[cfg(feature = "float_layout")]
@@ -1314,6 +1439,22 @@ fn perform_final_layout_on_in_flow_children(
                     // Floats placed while the position of the child's top margin strut was unresolved
                     // also adjoin this block's current strut
                     block_ctx.merge_adjoining_floats(child_top_adjoining_floats);
+
+                    // The floats handed to the child: where it placed them, in this container's
+                    // coordinates, or placed now where they stood if it did not.
+                    for ((index, float, margin, y_for_float, adjoins), at) in handed.into_iter().zip(placed) {
+                        let at = match at {
+                            Some(at) => Point { x: at.x + inset_left, y: at.y + child_y },
+                            None => block_ctx.place_floated_box(
+                                float.size,
+                                y_for_float,
+                                float.direction,
+                                float.clear,
+                                adjoins,
+                            ),
+                        };
+                        float_locations.push((index, Point { x: at.x + margin.left, y: at.y + margin.top }));
+                    }
                 }
 
                 output
@@ -1597,6 +1738,21 @@ fn perform_final_layout_on_in_flow_children(
                 // so floats placed before this point no longer force clearance
                 #[cfg(feature = "float_layout")]
                 block_ctx.commit_strut();
+            }
+        }
+    }
+
+    // Floats still waiting (no leaf took them, which the lookahead rules out) are placed where
+    // they stood; then every deferred float gets its position.
+    #[cfg(feature = "float_layout")]
+    {
+        for (index, float, margin, y_for_float, adjoins) in waiting_floats {
+            let at = block_ctx.place_floated_box(float.size, y_for_float, float.direction, float.clear, adjoins);
+            float_locations.push((index, Point { x: at.x + margin.left, y: at.y + margin.top }));
+        }
+        for (index, at) in float_locations {
+            if let Some(layout) = items[index].final_layout.as_mut() {
+                layout.location = at;
             }
         }
     }
