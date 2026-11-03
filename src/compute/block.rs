@@ -674,10 +674,12 @@ fn compute_inner(
         block_ctx,
     );
 
-    // Root BFCs contain floats
+    // Root BFCs contain floats: the content box grows to the bottom of their margin boxes, and
+    // the bottom padding, border and scrollbar gutter go below that (CSS 2.2 §10.6.7)
     #[cfg(feature = "float_layout")]
     if block_ctx.is_bfc_root() || establishes_new_bfc {
-        intrinsic_outer_height = intrinsic_outer_height.max(block_ctx.floated_content_height_contribution());
+        intrinsic_outer_height = intrinsic_outer_height
+            .max(block_ctx.floated_content_height_contribution() + resolved_content_box_inset.bottom);
     }
 
     let container_outer_height = known_dimensions
