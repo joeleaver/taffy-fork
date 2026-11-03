@@ -375,6 +375,7 @@ where
         // broke around floats that have since moved. Such a box is computed afresh each time.
         #[cfg(feature = "float_layout")]
         if block_ctx.as_deref().is_some_and(|ctx| ctx.has_active_floats(0.0) || !ctx.pending_floats().is_empty()) {
+            self.taffy.nodes[node_id.into()].cache.clear_for_uncached_compute();
             return self.compute_child_layout_uncached(node_id, inputs, block_ctx);
         }
 

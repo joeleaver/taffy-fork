@@ -269,6 +269,18 @@ impl Cache {
         ClearState::Cleared
     }
 
+    /// Drop every entry, but count the node as computed: a node laid out without the cache
+    /// (one beside the floats of its block formatting context, whose layout the cache key does
+    /// not describe) keeps no entry, yet a later [`Self::clear`] must still report it
+    /// [`ClearState::Cleared`], or marking a descendant dirty stops at it and its ancestors
+    /// keep serving layouts computed before. Its old entries go too: one stored before the
+    /// floats came would be served again once they have gone, though the node's children have
+    /// been laid out since.
+    pub fn clear_for_uncached_compute(&mut self) {
+        self.clear();
+        self.is_empty = false;
+    }
+
     /// Returns true if all cache entries are None, else false
     pub fn is_empty(&self) -> bool {
         self.final_layout_entry.is_none() && !self.measure_entries.iter().any(|entry| entry.is_some())
