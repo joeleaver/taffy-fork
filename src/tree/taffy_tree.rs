@@ -1062,6 +1062,46 @@ impl<NodeContext> TaffyTree<NodeContext> {
         Ok(())
     }
 
+    /// The size each of `nodes` would take in `available_space`, with no known dimensions and no
+    /// percentage basis — a size-only (`RunMode::ComputeSize`) request, as a parent asks a child
+    /// for its intrinsic contribution — with the measure functions of
+    /// [`Self::compute_layout_with_block_measure`].
+    ///
+    /// Answered from and stored into each node's measure cache, like any size request: it writes
+    /// no node's final layout, so it leaves the cache entries a later
+    /// [`Self::compute_layout_with_block_measure`] reuses untouched. Its sizes are unrounded.
+    #[cfg(feature = "block_layout")]
+    pub fn compute_sizes_with_block_measure<MeasureFunction, PlacesFloats>(
+        &mut self,
+        nodes: &[NodeId],
+        available_space: Size<AvailableSpace>,
+        measure_function: MeasureFunction,
+        places_floats: PlacesFloats,
+    ) -> Vec<Size<f32>>
+    where
+        MeasureFunction:
+            FnMut(LayoutInput, NodeId, Option<&mut NodeContext>, &Style, Option<&mut BlockContext<'_>>) -> LayoutOutput,
+        PlacesFloats: Fn(NodeId, Option<&NodeContext>) -> bool,
+    {
+        let mut taffy_view = TaffyView { taffy: self, measure_function: BlockMeasure(measure_function, places_floats) };
+        nodes
+            .iter()
+            .map(|&node| {
+                let inputs = LayoutInput {
+                    run_mode: RunMode::ComputeSize,
+                    sizing_mode: crate::tree::SizingMode::InherentSize,
+                    axis: crate::tree::RequestedAxis::Both,
+                    known_dimensions: Size::NONE,
+                    known_dimensions_are_definite: Size { width: true, height: true },
+                    parent_size: Size::NONE,
+                    available_space,
+                    vertical_margins_are_collapsible: crate::geometry::Line::FALSE,
+                };
+                taffy_view.compute_child_layout(node, inputs, None).size
+            })
+            .collect()
+    }
+
     /// Updates the stored layout of the provided `node` and its children
     pub fn compute_layout(&mut self, node: NodeId, available_space: Size<AvailableSpace>) -> Result<(), TaffyError> {
         self.compute_layout_with_measure(node, available_space, |inputs, _, _, style| {
