@@ -7,8 +7,18 @@ use crate::style::AvailableSpace;
 use crate::tree::{CollapsibleMarginSet, LayoutInput, LayoutOutput, RunMode};
 use crate::RequestedAxis;
 
-/// The number of cache entries for each node in the tree
-const CACHE_SIZE: usize = 9;
+/// The number of cache entries for each node in the tree.
+///
+/// Sixteen, the width of the `recently_used_entries` bitmask. With the clock
+/// eviction below, a node asked for more distinct sizes per layout than it has
+/// entries misses on **every** one of them on every layout, however many
+/// times each is asked in it: the cycle evicts each entry just before it is
+/// asked again. A grid item under a few intrinsic probes reaches ten — its
+/// min- and max-content widths, then its height under a min- and a
+/// max-content constraint at each of four column widths — and nine entries
+/// made a grid of 430 such items re-measure all of them whenever any one
+/// changed (rinch #2136).
+const CACHE_SIZE: usize = 16;
 
 // Manually written-out results of float to u32 bit casts because
 // `f32::to_bits` is not yet const at our MSRV.
@@ -331,6 +341,21 @@ mod tests {
 
         assert_eq!(cache.get(&input(1.0)), Some(output(1.0)));
         assert_eq!(cache.get(&input(2.0)), None);
+    }
+
+    /// A node asked the same ten sizes in a cycle, layout after layout (rinch
+    /// #2136): from the second cycle on, every one is answered.
+    #[test]
+    fn ten_sizes_asked_in_a_cycle_all_stay_cached() {
+        let mut cache = Cache::new();
+        for width in 0..10 {
+            cache.store(&input(width as f32), output(width as f32));
+        }
+        for _ in 0..3 {
+            for width in 0..10 {
+                assert_eq!(cache.get(&input(width as f32)), Some(output(width as f32)), "width {width}");
+            }
+        }
     }
 
     #[test]
