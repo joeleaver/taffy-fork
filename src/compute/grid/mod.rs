@@ -127,13 +127,30 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         .maybe_clamp(min_size, max_size)
         .maybe_max(padding_border_size);
 
+    // RINCH: the block axis (rows) of a grid whose height is not definite has
+    // indefinite available space, whatever its parent offers. Browsers lay a
+    // box's block size out from its content (there is no min-content
+    // constraint in the block axis, and a parent's definite height is not the
+    // grid's), so `auto` and `fr` rows are content-sized: Chrome 156 gives an
+    // auto-height grid of `overflow: hidden` cards holding 100px rows of 100px
+    // in a 300px-tall column flex container, grid parent or `align-items:
+    // start` row flex container. Taffy used the parent's definite height (it
+    // shared that height among the auto rows) and a min-content constraint (it
+    // sized them from the items' minimum contributions, zero for a scroll
+    // container), so a grid flex item's automatic minimum height came out at
+    // its gaps and the grid was shrunk below its content (rinch #2139).
+    // A height from `known_dimensions` (a stretched or flexed item) or the
+    // grid's own `height` is still definite, and the free space is shared.
+    let block_size_is_definite = known_dimensions.height.or(preferred_size.height).is_some();
     let available_grid_space = Size {
         width: constrained_available_space
             .width
             .map_definite_value(|space| space - content_box_inset.horizontal_axis_sum()),
-        height: constrained_available_space
-            .height
-            .map_definite_value(|space| space - content_box_inset.vertical_axis_sum()),
+        height: if block_size_is_definite {
+            constrained_available_space.height.map_definite_value(|space| space - content_box_inset.vertical_axis_sum())
+        } else {
+            AvailableSpace::MaxContent
+        },
     };
 
     let outer_node_size =
