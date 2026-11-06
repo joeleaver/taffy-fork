@@ -11,9 +11,11 @@ use taffy::prelude::*;
 /// A text-like leaf of `words` 40px words: min-content 40, max-content
 /// `40 * words`.
 fn measure(known: Size<Option<f32>>, avail: Size<AvailableSpace>, words: f32) -> Size<f32> {
+    // An empty leaf (no words) is 0 wide.
+    let min = f32::min(40.0, 40.0 * words);
     let width = known.width.unwrap_or(match avail.width {
-        AvailableSpace::Definite(w) => w.clamp(40.0, 40.0 * words),
-        AvailableSpace::MinContent => 40.0,
+        AvailableSpace::Definite(w) => w.clamp(min, 40.0 * words),
+        AvailableSpace::MinContent => min,
         AvailableSpace::MaxContent => 40.0 * words,
     });
     let per_line = (width / 40.0).floor().max(1.0);
@@ -29,6 +31,18 @@ fn columns(words: &[f32], avail: f32, flag: bool) -> Vec<f32> {
 /// [`columns`], with a second row of one leaf of `span.1` words spanning the
 /// columns from `span.0` to the last.
 fn columns_with_span(words: &[f32], spanning: Option<(i16, f32)>, avail: f32, flag: bool) -> Vec<f32> {
+    let tracks: Vec<TrackSizingFunction> = words.iter().map(|_| auto()).collect();
+    grid_of(&tracks, words, spanning, avail, flag)
+}
+
+/// [`columns_with_span`] with the columns' own track sizing functions.
+fn grid_of(
+    tracks: &[TrackSizingFunction],
+    words: &[f32],
+    spanning: Option<(i16, f32)>,
+    avail: f32,
+    flag: bool,
+) -> Vec<f32> {
     let mut tree: TaffyTree<f32> = TaffyTree::new();
     tree.disable_rounding();
     let mut items: Vec<NodeId> =
@@ -47,7 +61,7 @@ fn columns_with_span(words: &[f32], spanning: Option<(i16, f32)>, avail: f32, fl
             Style {
                 display: Display::Grid,
                 size: Size { width: Dimension::fit_content(), height: auto() },
-                grid_template_columns: words.iter().map(|_| GridTemplateComponent::Single(auto())).collect(),
+                grid_template_columns: tracks.iter().map(|t| GridTemplateComponent::Single(*t)).collect(),
                 proportional_column_sizing: flag,
                 ..Default::default()
             },
@@ -106,4 +120,19 @@ fn a_spanning_items_max_content_goes_to_its_columns_by_their_own() {
     // Equal shares would give 200 and 120.
     assert_eq!(columns_with_span(&[3.0, 1.0], Some((1, 8.0)), 600.0, true), vec![240.0, 80.0]);
     assert_eq!(columns_with_span(&[3.0, 1.0], Some((1, 8.0)), 600.0, false), vec![200.0, 120.0]);
+}
+
+#[test]
+fn a_fixed_width_column_reaches_its_width_before_the_auto_columns_grow() {
+    // `minmax(min-content, 200px)` (a table column with `width: 200px`, one
+    // word) beside an auto column of 10 words, into 300: the fixed column
+    // takes its 160 first (Blink's "specified guess"), the auto one the
+    // remaining 60. Chrome 156: 200 / 100.
+    let fixed = minmax(min_content(), length(200.0));
+    let got = grid_of(&[fixed, auto()], &[1.0, 10.0], None, 300.0, true);
+    assert_eq!(got, vec![200.0, 100.0]);
+    // Two 20px spacers around an auto column of 50 words, into 600: 20/560/20.
+    let spacer = minmax(min_content(), length(20.0));
+    let got = grid_of(&[spacer, auto(), spacer], &[0.0, 50.0, 0.0], None, 600.0, true);
+    assert_eq!(got, vec![20.0, 560.0, 20.0]);
 }

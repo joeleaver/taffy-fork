@@ -1206,8 +1206,8 @@ fn distribute_item_space_to_growth_limit(
         // ...when handling any intrinsic growth limit: all affected tracks.
         let size =
             |track: &GridTrack| if track.growth_limit == f32::INFINITY { track.base_size } else { track.growth_limit };
-        let total: f32 = tracks.iter().filter(|t| track_is_affected(t)).map(size).sum();
-        let in_proportion = in_proportion && total > 0.0;
+        let in_proportion =
+            in_proportion && tracks.iter().filter(|t| track_is_affected(t)).map(size).sum::<f32>() > 0.0;
         distribute_space_up_to_limits(
             extra_space,
             tracks,
@@ -1234,8 +1234,11 @@ fn distribute_item_space_to_growth_limit(
 /// Distributes free space (if any) to tracks with FINITE growth limits, up to their limits.
 ///
 /// In equal shares, or with `in_proportion` (a CSS table's columns,
-/// [`crate::Style::proportional_column_sizing`]) in proportion to each track's room to grow, so
-/// that every track reaches its limit at once.
+/// [`crate::Style::proportional_column_sizing`]) in stages, as a table distributes its width
+/// between the "guesses" of css-tables-3 (Blink's `DistributeInlineSizeToComputedInlineSizeAuto`):
+/// first to the tracks whose max track sizing function is a percentage, then to those whose max is
+/// a fixed length, then to every track; within a stage, in proportion to each track's room to
+/// grow, so that the stage's tracks reach their limits at once.
 #[inline(always)]
 fn maximise_tracks(
     axis_tracks: &mut [GridTrack],
@@ -1253,17 +1256,30 @@ fn maximise_tracks(
         // equally, as a grid's tracks do.
         let in_proportion = in_proportion
             && axis_tracks.iter().all(|track| track.base_size >= limit(track) || limit(track).is_finite());
-        distribute_space_up_to_limits(
-            free_space,
-            axis_tracks,
-            |_| true,
-            move |track: &GridTrack| if in_proportion { limit(track) - track.base_size } else { 1.0 },
-            |track| track.base_size,
-            limit,
-        );
-        for track in axis_tracks.iter_mut() {
-            track.base_size += track.item_incurred_increase;
-            track.item_incurred_increase = 0.0;
+        let percent = |track: &GridTrack| track.max_track_sizing_function.uses_percentage();
+        let fixed = |track: &GridTrack| {
+            let max = track.max_track_sizing_function;
+            !max.is_intrinsic() && !max.is_fr() && !max.uses_percentage()
+        };
+        let stages: [&dyn Fn(&GridTrack) -> bool; 3] =
+            if in_proportion { [&percent, &fixed, &|_| true] } else { [&|_| false, &|_| false, &|_| true] };
+        let mut free_space = free_space;
+        for affected in stages {
+            if free_space <= 0.0 {
+                break;
+            }
+            free_space = distribute_space_up_to_limits(
+                free_space,
+                axis_tracks,
+                affected,
+                move |track: &GridTrack| if in_proportion { limit(track) - track.base_size } else { 1.0 },
+                |track| track.base_size,
+                limit,
+            );
+            for track in axis_tracks.iter_mut() {
+                track.base_size += track.item_incurred_increase;
+                track.item_incurred_increase = 0.0;
+            }
         }
     }
 }
