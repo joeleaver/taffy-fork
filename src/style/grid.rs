@@ -294,6 +294,12 @@ pub trait GridItemStyle: CoreStyle {
     fn justify_self(&self) -> Option<AlignSelf> {
         Style::<Self::CustomIdent>::DEFAULT.justify_self
     }
+    /// Whether a stretched item fills its grid area's width past its `max_size.width`, which
+    /// then caps only its contributions to its tracks (the sizing of a CSS table cell)
+    #[inline(always)]
+    fn stretch_past_max_width(&self) -> bool {
+        Style::<Self::CustomIdent>::DEFAULT.stretch_past_max_width
+    }
 
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]

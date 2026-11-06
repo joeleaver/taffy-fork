@@ -95,8 +95,8 @@ where
     // Return early if both width and height are known
     if run_mode == RunMode::ComputeSize && has_styles_preventing_being_collapsed_through {
         if let Size { width: Some(width), height: Some(height) } = node_size {
-            let size = Size { width, height }
-                .maybe_clamp(node_min_size, node_max_size)
+            let size = known_dimensions
+                .unwrap_or(Size { width, height }.maybe_clamp(node_min_size, node_max_size))
                 .maybe_max(padding_border.sum_axes().map(Some));
             return LayoutOutput {
                 size,
@@ -110,7 +110,17 @@ where
         };
     }
 
-    // Compute available space
+    // Compute available space. A known dimension is the parent's to decide and is not clamped
+    // again here, as the block algorithm does not: a table cell's grid passes a width past the
+    // cell's max width (`GridItemStyle::stretch_past_max_width`), and its text wraps at it.
+    let node_min_size = Size {
+        width: node_min_size.width.filter(|_| known_dimensions.width.is_none()),
+        height: node_min_size.height.filter(|_| known_dimensions.height.is_none()),
+    };
+    let node_max_size = Size {
+        width: node_max_size.width.filter(|_| known_dimensions.width.is_none()),
+        height: node_max_size.height.filter(|_| known_dimensions.height.is_none()),
+    };
     let available_space = Size {
         width: known_dimensions
             .width

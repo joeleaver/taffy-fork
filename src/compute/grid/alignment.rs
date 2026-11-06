@@ -121,6 +121,7 @@ pub(super) fn align_and_position_item(
     };
 
     let position = style.position();
+    let stretch_past_max_width = style.stretch_past_max_width();
     let inset_horizontal = style
         .inset()
         .horizontal_components()
@@ -225,6 +226,8 @@ pub(super) fn align_and_position_item(
         _ => Size::NONE,
     };
 
+    let width_is_keyword = matches!(keyword_width, Some(Some(_)));
+
     // If node is absolutely positioned and width is not set explicitly, then deduce it
     // from left, right and container_content_box if both are set.
     let width = inherent_size.width.or_else(|| {
@@ -322,7 +325,20 @@ pub(super) fn align_and_position_item(
     // Reapply aspect ratio after stretch and absolute position height adjustments
     let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio);
 
-    // Clamp size by min and max width/height
+    // Clamp size by min and max width/height. A table cell's stretched width passes its max
+    // width, which capped only its contributions ([`GridItemStyle::stretch_past_max_width`]).
+    let stretched_width = inherent_size.width.is_none()
+        && !width_is_keyword
+        && margin.left.is_some()
+        && margin.right.is_some()
+        && alignment_styles.horizontal == AlignSelf::STRETCH
+        && position != Position::Absolute
+        && aspect_ratio.is_none();
+    let max_size = if stretch_past_max_width && stretched_width {
+        Size { width: None, height: max_size.height }
+    } else {
+        max_size
+    };
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
 
     // Layout node

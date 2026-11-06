@@ -675,6 +675,14 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// Falls back to the parents [`JustifyItems`] if not set
     #[cfg(feature = "grid")]
     pub justify_self: Option<AlignSelf>,
+    /// A grid item that stretches in the inline axis fills its grid area's width even past its
+    /// `max_size.width`, which still caps the item's contributions to the tracks it spans.
+    ///
+    /// This is how CSS tables size a cell: its `max-width` limits what it asks of its columns,
+    /// and the cell is laid out at its columns' width (Blink's `CreateCellInlineConstraint` and
+    /// `SetupTableCellConstraintSpaceBuilder`). Grid items proper are clamped (css-grid-1 §6.2).
+    #[cfg(feature = "grid")]
+    pub stretch_past_max_width: bool,
     /// How should content contained within this item be aligned in the cross/block axis
     #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
     pub align_content: Option<AlignContent>,
@@ -795,6 +803,8 @@ impl<S: CheapCloneStr> Style<S> {
         justify_items: None,
         #[cfg(feature = "grid")]
         justify_self: None,
+        #[cfg(feature = "grid")]
+        stretch_past_max_width: false,
         #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
         align_content: None,
         #[cfg(any(feature = "flexbox", feature = "grid"))]
@@ -1382,6 +1392,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
     fn justify_self(&self) -> Option<AlignSelf> {
         self.justify_self
     }
+    #[inline(always)]
+    fn stretch_past_max_width(&self) -> bool {
+        self.stretch_past_max_width
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1401,6 +1415,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn justify_self(&self) -> Option<AlignSelf> {
         (*self).justify_self()
+    }
+    #[inline(always)]
+    fn stretch_past_max_width(&self) -> bool {
+        (*self).stretch_past_max_width()
     }
 }
 
@@ -1446,6 +1464,8 @@ mod tests {
             justify_items: Default::default(),
             #[cfg(feature = "grid")]
             justify_self: Default::default(),
+            #[cfg(feature = "grid")]
+            stretch_past_max_width: false,
             #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
             align_content: Default::default(),
             #[cfg(any(feature = "flexbox", feature = "grid"))]

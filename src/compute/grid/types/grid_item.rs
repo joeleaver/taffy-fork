@@ -54,6 +54,8 @@ pub(in super::super) struct GridItem {
     pub align_self: AlignSelf,
     /// The item's justify_self property, or the parent's justify_items property is not set
     pub justify_self: AlignSelf,
+    /// Whether a stretched width passes the item's max width ([`GridItemStyle::stretch_past_max_width`])
+    pub stretch_past_max_width: bool,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -120,6 +122,7 @@ impl GridItem {
             margin: style.margin(),
             align_self: style.align_self().unwrap_or(parent_align_items),
             justify_self: style.justify_self().unwrap_or(parent_justify_items),
+            stretch_past_max_width: style.stretch_past_max_width(),
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -362,9 +365,23 @@ impl GridItem {
         let Size { width, height } = Size { width, height }.maybe_apply_aspect_ratio(aspect_ratio);
 
         // Clamp size by min and max width/height
-        let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
+        let clamped = Size { width, height }.maybe_clamp(min_size, max_size);
 
-        Size { width, height }
+        // A table cell stretches past its max width ([`GridItemStyle::stretch_past_max_width`])
+        let width = if self.stretch_past_max_width
+            && aspect_ratio.is_none()
+            && inherent_size.width.is_none()
+            && !self.size.width.is_sizing_keyword()
+            && !self.margin.left.is_auto()
+            && !self.margin.right.is_auto()
+            && self.justify_self == AlignSelf::STRETCH
+        {
+            width.maybe_max(min_size.width)
+        } else {
+            clamped.width
+        };
+
+        Size { width, height: clamped.height }
     }
 
     /// Returns the grid area's size in the specified axis when every spanned track has a definite fixed size.
