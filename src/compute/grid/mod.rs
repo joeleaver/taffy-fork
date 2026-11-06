@@ -112,6 +112,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let justify_content = style.justify_content().unwrap_or(JustifyContent::STRETCH);
     let align_items = style.align_items();
     let justify_items = style.justify_items();
+    let proportional_column_sizing = style.proportional_column_sizing();
 
     // Note: we avoid accessing the grid rows/columns methods more than once as this can
     // cause an expensive-ish computation
@@ -339,6 +340,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             track.max_track_sizing_function.definite_value(parent_size, |val, basis| tree.calc(val, basis))
         },
         has_baseline_aligned_item,
+        proportional_column_sizing,
     );
     let initial_column_sum = columns.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.width = inner_node_size.width.or_else(|| initial_column_sum.into());
@@ -360,6 +362,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         &mut items,
         |track: &GridTrack, _, _| Some(track.base_size),
         false, // TODO: Support baseline alignment in the vertical axis
+        false,
     );
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
@@ -484,6 +487,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             &mut items,
             |track: &GridTrack, _, _| Some(track.base_size),
             has_baseline_aligned_item,
+            proportional_column_sizing,
         );
 
         // Row sizing must be re-run (once) if:
@@ -546,6 +550,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 &mut items,
                 |track: &GridTrack, _, _| Some(track.base_size),
                 false, // TODO: Support baseline alignment in the vertical axis
+                false,
             );
         }
     }

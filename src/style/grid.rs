@@ -249,6 +249,12 @@ pub trait GridContainerStyle: CoreStyle {
     fn justify_items(&self) -> Option<AlignItems> {
         Style::<Self::CustomIdent>::DEFAULT.justify_items
     }
+    /// Whether the inline axis shares space between its tracks as CSS tables share it between
+    /// `auto` columns ([`crate::Style::proportional_column_sizing`])
+    #[inline(always)]
+    fn proportional_column_sizing(&self) -> bool {
+        Style::<Self::CustomIdent>::DEFAULT.proportional_column_sizing
+    }
 
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]

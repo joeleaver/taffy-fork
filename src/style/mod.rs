@@ -671,6 +671,23 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// How this node's children should be aligned in the inline axis
     #[cfg(feature = "grid")]
     pub justify_items: Option<AlignItems>,
+    /// The inline axis shares space between its tracks as CSS tables share it between `auto`
+    /// columns, instead of in equal shares (the default, as grid containers proper do):
+    ///
+    /// - **Maximise Tracks** (css-grid-1 §12.6): the free space goes to the columns in
+    ///   proportion to each one's room to grow (growth limit minus base size), so every column
+    ///   reaches its growth limit at once. Each column is then its min-content width plus the
+    ///   same fraction of its max-content minus min-content width (CSS 2.1 §17.5.2.2, Blink's
+    ///   `DistributeInlineSizeToComputedInlineSizeAuto`). A growable column whose growth limit
+    ///   is not finite has no room to measure a share by; then all share equally.
+    /// - **A spanning item's growth-limit contribution** (§12.5.1, the space beyond the growth
+    ///   limits of the tracks it spans): in proportion to those growth limits, as Blink shares a
+    ///   `colspan` cell's max-content width between its columns
+    ///   (`DistributeColspanCellToColumnsAuto`); equally when they are all zero.
+    ///
+    /// The block axis is unchanged.
+    #[cfg(feature = "grid")]
+    pub proportional_column_sizing: bool,
     /// How this node should be aligned in the inline axis
     /// Falls back to the parents [`JustifyItems`] if not set
     #[cfg(feature = "grid")]
@@ -801,6 +818,8 @@ impl<S: CheapCloneStr> Style<S> {
         align_self: None,
         #[cfg(feature = "grid")]
         justify_items: None,
+        #[cfg(feature = "grid")]
+        proportional_column_sizing: false,
         #[cfg(feature = "grid")]
         justify_self: None,
         #[cfg(feature = "grid")]
@@ -1248,6 +1267,10 @@ impl<S: CheapCloneStr> GridContainerStyle for Style<S> {
     fn justify_items(&self) -> Option<AlignItems> {
         self.justify_items
     }
+    #[inline(always)]
+    fn proportional_column_sizing(&self) -> bool {
+        self.proportional_column_sizing
+    }
 
     #[inline(always)]
     #[cfg(feature = "grid")]
@@ -1370,6 +1393,10 @@ impl<T: GridContainerStyle> GridContainerStyle for &'_ T {
     fn justify_items(&self) -> Option<AlignItems> {
         (*self).justify_items()
     }
+    #[inline(always)]
+    fn proportional_column_sizing(&self) -> bool {
+        (*self).proportional_column_sizing()
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1462,6 +1489,8 @@ mod tests {
             align_self: Default::default(),
             #[cfg(feature = "grid")]
             justify_items: Default::default(),
+            #[cfg(feature = "grid")]
+            proportional_column_sizing: false,
             #[cfg(feature = "grid")]
             justify_self: Default::default(),
             #[cfg(feature = "grid")]
