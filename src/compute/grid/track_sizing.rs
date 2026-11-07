@@ -1529,7 +1529,8 @@ fn stretch_auto_tracks(
 /// The width a table has past every column's maximum (its "max guess") goes, as Blink's
 /// `DistributeInlineSizeToComputedInlineSizeAuto` distributes the excess: to the columns with an
 /// `auto` (intrinsic) max track sizing function and a non-zero size, in proportion to their sizes
-/// (each is at its max-content width here); with none, to the columns with a fixed-length max
+/// (each is at its max-content width here); when every `auto` column is empty (size 0), to those in
+/// equal shares; with no `auto` column, to the columns with a fixed-length max
 /// (a `<td width=N>` column) in proportion to theirs; with none, to the percentage columns in
 /// proportion to theirs; with none of those either, in equal shares to every column. A grid
 /// stretches only its `auto` tracks, in equal shares.
@@ -1558,6 +1559,14 @@ fn distribute_table_excess(
         column(track) && !max.is_intrinsic() && !max.is_fr() && !max.uses_percentage()
     };
     let percent = |track: &GridTrack| column(track) && track.max_track_sizing_function.uses_percentage();
+    // Auto columns that are all empty (no content, no padding: an email's
+    // filler cell beside a logo) share it equally, before any declared column.
+    let autos = axis_tracks.iter().filter(|t| auto(t)).count();
+    if autos > 0 && axis_tracks.iter().filter(|t| auto(t)).all(|t| t.base_size <= 0.0) {
+        let share = free_space / autos as f32;
+        axis_tracks.iter_mut().filter(|t| auto(t)).for_each(|t| t.base_size += share);
+        return;
+    }
     let tiers: [&dyn Fn(&GridTrack) -> bool; 3] = [&auto, &fixed, &percent];
     for tier in tiers {
         let sum: f32 = axis_tracks.iter().filter(|t| tier(t)).map(|t| t.base_size).sum();

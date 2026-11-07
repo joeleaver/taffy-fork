@@ -274,3 +274,35 @@ fn a_grid_of_a_given_width_widens_to_its_columns_minimum() {
     assert_eq!(got, vec![300.0, 50.0]);
     assert_eq!(w, 354.0);
 }
+
+#[test]
+fn empty_auto_columns_share_the_excess_equally_before_the_declared_ones() {
+    // A 100px column beside an empty auto column (an email's filler cell
+    // beside its logo), 404 past the gap: the filler takes the 304. Chrome
+    // 156: 108 / 280 for `<td width=100>` (padding 4) + an empty `<td>` in a
+    // 400px table. Two empty columns share it equally.
+    let fixed = minmax(min_content(), length(100.0));
+    let (got, _) = table(Some(408.0), &[fixed, mc_auto()], &[(1.0, 40.0), (0.0, 40.0)], None);
+    assert_near(&got, &[100.0, 304.0]);
+    let (got, _) = table(Some(408.0), &[fixed, mc_auto(), mc_auto()], &[(1.0, 40.0), (0.0, 40.0), (0.0, 40.0)], None);
+    assert_near(&got, &[100.0, 150.0, 150.0]);
+    // An empty auto column beside one with content gets none of it.
+    let (got, _) = table(Some(408.0), &[mc_auto(), mc_auto()], &[(1.0, 40.0), (0.0, 40.0)], None);
+    assert_near(&got, &[404.0, 0.0]);
+}
+
+#[test]
+fn the_excess_goes_to_a_declared_column_before_a_percentage_one() {
+    // `minmax(min-content, 20%)` and a 100px column in a 808px grid: the
+    // percentage column stops at 20% (of 808, gap included: 161.6), the
+    // declared one takes the rest of the 804. Chrome 156: 157.59 / 630.41 for
+    // the same in an 800px table (its basis leaves all the spacing out, rinch
+    // #2333).
+    let (got, _) = table(
+        Some(808.0),
+        &[minmax(min_content(), percent(0.2)), minmax(min_content(), length(100.0))],
+        &[(1.0, 40.0), (1.0, 40.0)],
+        None,
+    );
+    assert_near(&got, &[161.6, 642.4]);
+}
