@@ -3,7 +3,7 @@ use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
 use crate::tree::{Baselines, CollapsibleMarginSet, Layout, LayoutInput, LayoutOutput, RunMode, SizingMode};
-use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId};
+use crate::tree::{LayoutPartialTreeExt, NodeId};
 use crate::util::debug::debug_log;
 use crate::util::sys::f32_max;
 use crate::util::sys::Vec;
@@ -56,7 +56,19 @@ impl BlockFormattingContext {
             top_adjoining_floats: None,
             #[cfg(feature = "float_layout")]
             pending_floats: Vec::new(),
+            #[cfg(feature = "float_layout")]
+            intrinsic: false,
         }
+    }
+
+    /// A context that hands the leaf right after `floats` those floats, sized, for a question
+    /// about the leaf's intrinsic width ([`BlockContext::is_intrinsic`])
+    #[cfg(feature = "float_layout")]
+    fn intrinsic_block_context(&mut self, floats: Vec<PendingFloat>) -> BlockContext<'_> {
+        let mut ctx = self.root_block_context();
+        ctx.pending_floats = floats;
+        ctx.intrinsic = true;
+        ctx
     }
 }
 
@@ -93,6 +105,10 @@ pub struct BlockContext<'bfc> {
     /// itself: see [`PendingFloat`].
     #[cfg(feature = "float_layout")]
     pending_floats: Vec<PendingFloat>,
+    /// Whether this context only carries the pending floats of a leaf asked its intrinsic
+    /// width ([`BlockContext::is_intrinsic`]): nothing is placed in it
+    #[cfg(feature = "float_layout")]
+    intrinsic: bool,
 }
 
 /// A float that its container sized but left for the leaf right after it to
@@ -143,6 +159,8 @@ impl BlockContext<'_> {
             top_adjoining_floats: None,
             #[cfg(feature = "float_layout")]
             pending_floats: Vec::new(),
+            #[cfg(feature = "float_layout")]
+            intrinsic: false,
         }
     }
 
@@ -222,6 +240,17 @@ impl BlockContext<'_> {
     /// in source order
     pub fn pending_floats(&self) -> &[PendingFloat] {
         &self.pending_floats
+    }
+
+    /// Whether the leaf is asked only its intrinsic width (RINCH). Its container measures the
+    /// leaf beside the floats right before it ([`Self::pending_floats`], which it left for the
+    /// leaf to place): an inline formatting context's floats share its lines (CSS 2.2 §9.5), so
+    /// at max-content each line is as wide as its content and the floats that stand in it
+    /// (Blink's `NGInlineNode::ComputeMinMaxSizes`). Nothing is placed in such a context: the
+    /// leaf answers the widest line with its floats, as it would lay the lines out at the width
+    /// it is offered.
+    pub fn is_intrinsic(&self) -> bool {
+        self.intrinsic
     }
 
     /// Place pending float `index` as high as it fits at or below `min_y` (this block's
@@ -635,6 +664,21 @@ fn compute_inner(
         return LayoutOutput::from_outer_size(Size { width: container_outer_width, height: 0.0 });
     }
 
+    // RINCH: a block whose width came from its content (a float or another fit-content box)
+    // lays its children out against that width: their percentages resolve against it, as
+    // they resolve against any containing block's width (CSS 2.2 §10.2). They were read with
+    // no width to resolve against, as they must be while the content is measured; read again
+    // with it. Without this a `width: 75%` child of an auto-width float stretched to the
+    // float's whole width (Chrome 156: 75% of it).
+    if known_dimensions.width.is_none() {
+        let inner_width = (container_outer_width - content_box_inset.horizontal_axis_sum()).max(0.0);
+        items = generate_item_list(
+            tree,
+            node_id,
+            Size { width: Some(inner_width), height: container_content_box_size.height },
+        );
+    }
+
     let container_percentage_resolution_height =
         percentage_basis_dimensions.height.or(size.height.maybe_max(min_size.height));
 
@@ -960,7 +1004,7 @@ fn resolve_stretch_height(
 /// Compute the content-based width in the case that the width of the container is not known
 #[inline]
 fn determine_content_based_container_width(
-    tree: &mut impl LayoutPartialTree,
+    tree: &mut impl LayoutBlockContainer,
     items: &[BlockItem],
     available_width: AvailableSpace,
 ) -> f32 {
@@ -969,19 +1013,53 @@ fn determine_content_based_container_width(
     let mut max_child_width = 0.0;
     #[cfg(feature = "float_layout")]
     let mut float_contribution = FloatIntrinsicWidthCalculator::new(available_width);
-    for item in items.iter().filter(|item| item.position != Position::Absolute) {
+    // RINCH: the floats right before a leaf that places them (its inline formatting context's
+    // own, `PendingFloat`) share its lines: below min-content they are measured with it
+    // (`BlockContext::is_intrinsic`). Elsewhere, and at min-content, a float sits beside the
+    // others only.
+    #[cfg(feature = "float_layout")]
+    let defers = available_width != AvailableSpace::MinContent
+        && items.iter().any(|item| item.float.float_direction().is_some());
+    #[cfg(feature = "float_layout")]
+    let mut leaf_floats: Vec<PendingFloat> = Vec::new();
+    for (index, item) in items.iter().enumerate().filter(|(_, item)| item.position != Position::Absolute) {
         let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
 
         let item_x_margin_sum = item
             .margin
             .resolve_or_zero(available_space.width.into_option(), |val, basis| tree.calc(val, basis))
             .horizontal_axis_sum();
+        let item_available_width = match resolve_sizing_keyword(item.size_style.width, None, None) {
+            Some(SizingKeywordResolution::Measure(available_width)) => available_width,
+            Some(SizingKeywordResolution::Exact(width)) => AvailableSpace::Definite(width),
+            None => available_space.width.maybe_sub(item_x_margin_sum),
+        };
+        #[cfg(feature = "float_layout")]
+        let floats_beside =
+            if item.float.float_direction().is_none() { core::mem::take(&mut leaf_floats) } else { Vec::new() };
         let width = known_dimensions.width.unwrap_or_else(|| {
-            let item_available_width = match resolve_sizing_keyword(item.size_style.width, None, None) {
-                Some(SizingKeywordResolution::Measure(available_width)) => available_width,
-                Some(SizingKeywordResolution::Exact(width)) => AvailableSpace::Definite(width),
-                None => available_space.width.maybe_sub(item_x_margin_sum),
-            };
+            #[cfg(feature = "float_layout")]
+            if !floats_beside.is_empty() {
+                let mut bfc = BlockFormattingContext::new();
+                let mut ctx = bfc.intrinsic_block_context(floats_beside);
+                return tree
+                    .compute_block_child_layout(
+                        item.node_id,
+                        LayoutInput {
+                            run_mode: RunMode::ComputeSize,
+                            sizing_mode: SizingMode::InherentSize,
+                            axis: RequestedAxis::Horizontal,
+                            known_dimensions,
+                            known_dimensions_are_definite: Size { width: true, height: true },
+                            parent_size: Size::NONE,
+                            available_space: Size { width: item_available_width, height: available_space.height },
+                            vertical_margins_are_collapsible: Line::TRUE,
+                        },
+                        Some(&mut ctx),
+                    )
+                    .size
+                    .width;
+            }
             tree.measure_child_size(
                 item.node_id,
                 known_dimensions,
@@ -998,8 +1076,19 @@ fn determine_content_based_container_width(
         #[cfg(feature = "float_layout")]
         if let Some(direction) = item.float.float_direction() {
             float_contribution.add_float(width, direction, item.clear);
+            if defers && next_places_floats(tree, items, index) {
+                leaf_floats.push(PendingFloat {
+                    node_id: item.node_id,
+                    size: Size { width, height: 0.0 },
+                    direction,
+                    clear: item.clear,
+                    placed: None,
+                });
+            }
             continue;
         }
+        #[cfg(not(feature = "float_layout"))]
+        let _ = index;
 
         max_child_width = f32_max(max_child_width, width);
     }
@@ -1010,6 +1099,22 @@ fn determine_content_based_container_width(
     }
 
     max_child_width
+}
+
+/// Whether the first in-flow item after `index` (floats aside) is a leaf in the same block
+/// formatting context that places the floats right before it (`PendingFloat`), as the final
+/// layout decides it.
+#[cfg(feature = "float_layout")]
+fn next_places_floats(tree: &impl LayoutBlockContainer, items: &[BlockItem], index: usize) -> bool {
+    items[index + 1..]
+        .iter()
+        .filter(|item| item.position != Position::Absolute)
+        .find(|item| item.float.float_direction().is_none())
+        .is_some_and(|item| {
+            item.is_in_same_bfc
+                && tree.child_count(item.node_id) == 0
+                && tree.leaf_places_preceding_floats(item.node_id)
+        })
 }
 
 /// Compute each child's final size and position
