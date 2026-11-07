@@ -1993,6 +1993,9 @@ fn perform_absolute_layout_on_absolute_children(
             known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
         }
 
+        // RINCH: the room for the box's border box, its horizontal margins out (rinch #2361), as
+        // for every other child.
+        let area_width_less_margins = area_width - margin.left.unwrap_or(0.0) - margin.right.unwrap_or(0.0);
         let final_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
@@ -2001,7 +2004,9 @@ fn perform_absolute_layout_on_absolute_children(
                     known_dimensions,
                     area_size.map(Some),
                     Size {
-                        width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
+                        width: AvailableSpace::Definite(
+                            area_width_less_margins.maybe_clamp(min_size.width, max_size.width),
+                        ),
                         height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
                     },
                     SizingMode::ContentSize,
@@ -2017,7 +2022,7 @@ fn perform_absolute_layout_on_absolute_children(
             final_size.map(Some),
             area_size.map(Some),
             Size {
-                width: AvailableSpace::Definite(area_width.maybe_clamp(min_size.width, max_size.width)),
+                width: AvailableSpace::Definite(area_width_less_margins.maybe_clamp(min_size.width, max_size.width)),
                 height: AvailableSpace::Definite(area_height.maybe_clamp(min_size.height, max_size.height)),
             },
             SizingMode::ContentSize,

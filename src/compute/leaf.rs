@@ -121,12 +121,17 @@ where
         width: node_max_size.width.filter(|_| known_dimensions.width.is_none()),
         height: node_max_size.height.filter(|_| known_dimensions.height.is_none()),
     };
+    // RINCH: the available width a leaf is handed is the room for its border box: the parent has
+    // taken the leaf's horizontal margins out of it already, as it does for a block container
+    // child (a float, a `fit-content` width, a grid area, a flex item's cross size in a column).
+    // Taking them out here too gave a shrink-to-fit leaf its room less its margins twice (rinch
+    // #2361: a float of wrapping text with `margin: 0 20px` in 300px was 220 wide, Chrome 260).
+    // The vertical margins are still the leaf's to subtract.
     let available_space = Size {
         width: known_dimensions
             .width
             .map(AvailableSpace::from)
             .unwrap_or(available_space.width)
-            .maybe_sub(margin.horizontal_axis_sum())
             .maybe_set(known_dimensions.width)
             .maybe_set(node_size.width)
             .map_definite_value(|size| {

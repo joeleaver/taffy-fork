@@ -758,10 +758,9 @@ fn determine_available_space(
     // Note: min/max/preferred size styles have already been applied to known_dimensions in the `compute` function above
     let width = match known_dimensions.width {
         Some(node_width) => AvailableSpace::Definite(node_width - constants.content_box_inset.horizontal_axis_sum()),
-        None => outer_available_space
-            .width
-            .maybe_sub(constants.margin.horizontal_axis_sum())
-            .maybe_sub(constants.content_box_inset.horizontal_axis_sum()),
+        // RINCH: the parent has taken the container's horizontal margins out of the width it
+        // hands it (rinch #2361), as it does for a block container or a leaf.
+        None => outer_available_space.width.maybe_sub(constants.content_box_inset.horizontal_axis_sum()),
     };
 
     let height = match known_dimensions.height {
@@ -773,6 +772,22 @@ fn determine_available_space(
     };
 
     Size { width, height }
+}
+
+/// RINCH: `cross` less the item's cross-axis `margin` when the cross axis is horizontal (a
+/// column): the width an item is measured in is the room for its border box, as a block container
+/// hands its children (rinch #2361). A row's cross axis is vertical, whose margins the item still
+/// takes out itself.
+fn horizontal_cross_less_margins(
+    constants: &AlgoConstants,
+    cross: AvailableSpace,
+    margin: Rect<f32>,
+) -> AvailableSpace {
+    if constants.is_row {
+        cross
+    } else {
+        cross.maybe_sub(margin.horizontal_axis_sum())
+    }
 }
 
 /// Determine the flex base size and hypothetical main size of each item.
@@ -843,6 +858,10 @@ fn determine_flex_base_size(
                 None => AvailableSpace::MaxContent,
             },
         };
+
+        // RINCH: the width an item of a column is measured in is the room for its border box: its
+        // horizontal margins come out of it here, not in the item (rinch #2361).
+        let child_measure_cross = horizontal_cross_less_margins(constants, cross_axis_available_space, child.margin);
 
         // Known dimensions for child sizing
         let mut child_cross_size_is_definite = child.size.cross(dir).is_some();
@@ -993,7 +1012,7 @@ fn determine_flex_base_size(
                         },
                     ),
                 )
-                .with_cross(dir, cross_axis_available_space);
+                .with_cross(dir, child_measure_cross);
 
             debug_log!("COMPUTE CHILD BASE SIZE:");
             break 'flex_basis tree.measure_child_size(
@@ -1036,7 +1055,7 @@ fn determine_flex_base_size(
 
         child.resolved_minimum_main_size = style_min_main_size.unwrap_or_else(|| {
             let min_content_main_size = {
-                let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
+                let child_available_space = Size::MIN_CONTENT.with_cross(dir, child_measure_cross);
 
                 debug_log!("COMPUTE CHILD MIN SIZE:");
                 tree.measure_child_size(
@@ -1429,7 +1448,10 @@ fn determine_container_main_size(
                                     })
                                     .maybe_clamp(child_min_cross, child_max_cross);
 
-                                let child_available_space = available_space.with_cross(dir, cross_axis_available_space);
+                                let child_available_space = available_space.with_cross(
+                                    dir,
+                                    horizontal_cross_less_margins(constants, cross_axis_available_space, item.margin),
+                                );
 
                                 // Known dimensions for child sizing
                                 let child_known_dimensions = {
@@ -1787,11 +1809,13 @@ fn determine_hypothetical_cross_size(
             .maybe_clamp(transferred_min_cross, transferred_max_cross)
             .maybe_max(padding_border_sum);
 
-        let child_available_cross = available_space
-            .cross(constants.dir)
-            .map_definite_value(|val| constants.divided_cross_space(val))
-            .maybe_clamp(transferred_min_cross, transferred_max_cross)
-            .maybe_max(padding_border_sum);
+        let child_available_cross = horizontal_cross_less_margins(
+            constants,
+            available_space.cross(constants.dir).map_definite_value(|val| constants.divided_cross_space(val)),
+            child.margin,
+        )
+        .maybe_clamp(transferred_min_cross, transferred_max_cross)
+        .maybe_max(padding_border_sum);
 
         // A cross size that is a sizing keyword (min-content, max-content, fit-content,
         // fit-content(...)) determines the available space constraint the item is measured under.
@@ -2741,6 +2765,9 @@ fn perform_absolute_layout_on_absolute_children(
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
             known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
         }
+        // RINCH: the room for the box's border box, its horizontal margins out (rinch #2361), as
+        // for every other child.
+        let container_width_less_margins = container_width - margin.left.unwrap_or(0.0) - margin.right.unwrap_or(0.0);
         let final_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
@@ -2749,7 +2776,9 @@ fn perform_absolute_layout_on_absolute_children(
                     known_dimensions,
                     constants.node_inner_size,
                     Size {
-                        width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
+                        width: AvailableSpace::Definite(
+                            container_width_less_margins.maybe_clamp(min_size.width, max_size.width),
+                        ),
                         height: AvailableSpace::Definite(
                             container_height.maybe_clamp(min_size.height, max_size.height),
                         ),
@@ -2767,7 +2796,9 @@ fn perform_absolute_layout_on_absolute_children(
             final_size.map(Some),
             constants.node_inner_size,
             Size {
-                width: AvailableSpace::Definite(container_width.maybe_clamp(min_size.width, max_size.width)),
+                width: AvailableSpace::Definite(
+                    container_width_less_margins.maybe_clamp(min_size.width, max_size.width),
+                ),
                 height: AvailableSpace::Definite(container_height.maybe_clamp(min_size.height, max_size.height)),
             },
             SizingMode::ContentSize,
