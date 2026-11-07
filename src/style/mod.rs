@@ -715,7 +715,8 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     ///   proportion to their heights; else the empty ones (all of it to the last when every row
     ///   is empty); else every non-empty row in proportion to its height.
     /// - When [`TableRows::sized`], a table taller than its rows gives the extra height to its
-    ///   body sections (in proportion to their heights), and each section to its rows as above,
+    ///   body sections (in proportion to their heights, as their rows were before any spanning
+    ///   cell grew them), and each section to its rows as above,
     ///   but with no rowspan step and with empty rows growing only when every non-empty one is
     ///   constrained. A caption takes none of it. A table shorter than its rows (and captions)
     ///   grows to them, unless its height was imposed by its parent.

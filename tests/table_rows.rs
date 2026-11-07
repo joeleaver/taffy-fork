@@ -144,3 +144,31 @@ fn a_cells_height_constrains_its_row() {
     let got = heights(&tree, &[a, b, c]);
     assert!(close(&got, &[30.0, 37.328, 74.672]), "{got:?}");
 }
+
+#[test]
+fn sections_share_a_taller_table_by_their_heights_before_rowspans() {
+    // A 200px table. The first tbody: rows of 10 and 20 and a 60px cell
+    // spanning both (which grows them to 20 and 40); the second: a row of
+    // 10. The sections share the 160px by 30 and 10, their rows' heights
+    // before the spanning cell: Chrome 50, 100 | 50 (by 60 and 10 it would
+    // be 57, 114 | 29).
+    let mut tree: TaffyTree<()> = TaffyTree::new();
+    let a = cell(&mut tree, 1, 1, 10.0, None);
+    let b = cell(&mut tree, 2, 1, 20.0, None);
+    let c = cell(&mut tree, 3, 1, 10.0, None);
+    let s = cell(&mut tree, 1, 2, 60.0, None);
+    tree.set_style(s, {
+        let mut st = tree.style(s).unwrap().clone();
+        st.grid_column = Line { start: line(2), end: taffy::style_helpers::span(1) };
+        st
+    })
+    .unwrap();
+    let kinds = vec![
+        TableRow { caption: false, section: 0, body: true },
+        TableRow { caption: false, section: 0, body: true },
+        TableRow { caption: false, section: 1, body: true },
+    ];
+    table(&mut tree, &[None; 3], kinds, 0.0, length(200.0), &[a, b, c, s]);
+    let got = heights(&tree, &[a, b, c, s]);
+    assert!(close(&got, &[50.0, 100.0, 50.0, 150.0]), "{got:?}");
+}

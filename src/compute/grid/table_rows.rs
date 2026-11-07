@@ -137,6 +137,11 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
         }
     }
 
+    // A section's height is its rows' before the spanning cells grow them: Blink records
+    // `section_block_size` in `ComputeSectionMinimumRowBlockSizes` before its rowspan step, and
+    // shares a taller table's height between sections by those.
+    let before_rowspans: Vec<f32> = rows.iter().map(|r| r.size).collect();
+
     // Spanning cells grow their rows, in Blink's order (a stable insertion sort: the order is
     // not a total one).
     let mut ordered: Vec<Rowspan> = Vec::with_capacity(rowspans.len());
@@ -153,7 +158,8 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     // A taller table's extra height goes to its body sections, then to their rows.
     if let Some(height) = table_height.filter(|_| table.sized) {
         let body: Vec<usize> = (0..count).filter(|&k| !kind(k).caption).collect();
-        // Sections: runs of rows of one section, with the gaps inside them.
+        // Sections: runs of rows of one section, with the gaps inside them, as tall as their
+        // rows were before the spanning cells grew them.
         let mut sections: Vec<(Vec<usize>, f32, bool)> = Vec::new();
         for &k in &body {
             let new = match sections.last() {
@@ -168,7 +174,7 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
             }
             let section = sections.last_mut().unwrap();
             section.0.push(k);
-            section.1 += rows[k].size;
+            section.1 += before_rowspans[k];
         }
         let between: f32 =
             sections.iter().skip(1).map(|(ids, _, _)| gap(ids[0].saturating_sub(1), axis_tracks)).sum::<f32>();
