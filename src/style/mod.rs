@@ -578,6 +578,11 @@ crate::util::parse::impl_parse_for_keyword_enum!(Direction,
     "rtl" => Rtl,
 );
 
+/// The max-content width a grid with [`Style::fill_max_content`] answers when its percentage
+/// width cannot resolve: Blink's cap on a table's inline size
+#[cfg(feature = "grid")]
+pub const FILL_MAX_CONTENT_WIDTH: f32 = 1_000_000.0;
+
 /// A typed representation of the CSS style information for a single node.
 ///
 /// The most important idea in flexbox is the notion of a "main" and "cross" axis, which are always perpendicular to each other.
@@ -688,6 +693,16 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// The block axis is unchanged.
     #[cfg(feature = "grid")]
     pub proportional_column_sizing: bool,
+    /// A grid whose preferred width cannot resolve — a percentage (or a `calc()` holding one) in
+    /// a size request with no percentage basis — answers a max-content width of
+    /// [`FILL_MAX_CONTENT_WIDTH`] (or its definite available width, if smaller), clamped by its
+    /// min and max widths, in place of its content's. Its min-content width is unchanged.
+    ///
+    /// This is Blink's quirk for a `table-layout: fixed` table with a percentage width
+    /// (`kTableMaxInlineSize`): the auto table cell, float or shrink-to-fit box around it fills its
+    /// room, where the content's width would leave it narrow.
+    #[cfg(feature = "grid")]
+    pub fill_max_content: bool,
     /// How this node should be aligned in the inline axis
     /// Falls back to the parents [`JustifyItems`] if not set
     #[cfg(feature = "grid")]
@@ -820,6 +835,8 @@ impl<S: CheapCloneStr> Style<S> {
         justify_items: None,
         #[cfg(feature = "grid")]
         proportional_column_sizing: false,
+        #[cfg(feature = "grid")]
+        fill_max_content: false,
         #[cfg(feature = "grid")]
         justify_self: None,
         #[cfg(feature = "grid")]
@@ -1271,6 +1288,10 @@ impl<S: CheapCloneStr> GridContainerStyle for Style<S> {
     fn proportional_column_sizing(&self) -> bool {
         self.proportional_column_sizing
     }
+    #[inline(always)]
+    fn fill_max_content(&self) -> bool {
+        self.fill_max_content
+    }
 
     #[inline(always)]
     #[cfg(feature = "grid")]
@@ -1397,6 +1418,10 @@ impl<T: GridContainerStyle> GridContainerStyle for &'_ T {
     fn proportional_column_sizing(&self) -> bool {
         (*self).proportional_column_sizing()
     }
+    #[inline(always)]
+    fn fill_max_content(&self) -> bool {
+        (*self).fill_max_content()
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1491,6 +1516,8 @@ mod tests {
             justify_items: Default::default(),
             #[cfg(feature = "grid")]
             proportional_column_sizing: false,
+            #[cfg(feature = "grid")]
+            fill_max_content: false,
             #[cfg(feature = "grid")]
             justify_self: Default::default(),
             #[cfg(feature = "grid")]

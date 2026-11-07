@@ -78,7 +78,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
         .maybe_apply_aspect_ratio(aspect_ratio)
         .maybe_add(box_sizing_adjustment);
-    let preferred_size = if inputs.sizing_mode == SizingMode::InherentSize {
+    let mut preferred_size = if inputs.sizing_mode == SizingMode::InherentSize {
         style
             .size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
@@ -87,6 +87,24 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     } else {
         Size::NONE
     };
+
+    // RINCH: a grid with `fill_max_content` whose width is a percentage with no basis (a size
+    // request: its contribution to an auto table, a float, a shrink-to-fit box) answers a
+    // max-content width of `FILL_MAX_CONTENT_WIDTH`, as Blink answers for a `table-layout:
+    // fixed` table with a percentage width; asked with a definite available width (fit-content),
+    // it takes that width when smaller. Its min-content width is its content's. The min and max
+    // widths clamp it below, as they clamp any preferred width.
+    if inputs.sizing_mode == SizingMode::InherentSize
+        && style.fill_max_content()
+        && preferred_size.width.is_none()
+        && !style.size().width.is_auto()
+    {
+        preferred_size.width = match available_space.width {
+            AvailableSpace::MaxContent => Some(crate::style::FILL_MAX_CONTENT_WIDTH),
+            AvailableSpace::Definite(width) => Some(width.min(crate::style::FILL_MAX_CONTENT_WIDTH)),
+            AvailableSpace::MinContent => None,
+        };
+    }
 
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
