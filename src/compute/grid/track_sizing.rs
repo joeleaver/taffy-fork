@@ -1,6 +1,6 @@
 //! Implements the track sizing algorithm
 //! <https://www.w3.org/TR/css-grid-1/#layout-algorithm>
-use super::types::{GridItem, GridTrack, TrackCounts};
+use super::types::{GridItem, GridTrack, GridTrackKind, TrackCounts};
 use crate::geometry::{AbstractAxis, Line, Size};
 use crate::style::{AlignContent, AlignContentKeyword, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
@@ -373,7 +373,11 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     // 11.8. Stretch auto Tracks
     // This step expands tracks that have an auto max track sizing function by dividing any remaining positive, definite free space equally amongst them.
     if axis_alignment == AlignContent::STRETCH {
-        stretch_auto_tracks(axis_tracks, axis_min_size, axis_available_space_for_expansion);
+        if proportional_column_sizing {
+            distribute_table_excess(axis_tracks, axis_min_size, axis_available_space_for_expansion);
+        } else {
+            stretch_auto_tracks(axis_tracks, axis_min_size, axis_available_space_for_expansion);
+        }
     }
 }
 
@@ -777,6 +781,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                         fit_content_limit,
                         IntrinsicContributionType::Minimum,
                         axis_inner_node_size,
+                        in_proportion,
                     );
                 } else {
                     distribute_item_space_to_base_size(
@@ -787,6 +792,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                         |track| track.growth_limit,
                         IntrinsicContributionType::Minimum,
                         axis_inner_node_size,
+                        in_proportion,
                     );
                 }
             }
@@ -813,6 +819,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                         fit_content_limit,
                         IntrinsicContributionType::Minimum,
                         axis_inner_node_size,
+                        in_proportion,
                     );
                 } else {
                     distribute_item_space_to_base_size(
@@ -823,6 +830,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                         |track| track.growth_limit,
                         IntrinsicContributionType::Minimum,
                         axis_inner_node_size,
+                        in_proportion,
                     );
                 }
             }
@@ -897,6 +905,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                             |_| f32::INFINITY,
                             IntrinsicContributionType::Maximum,
                             axis_inner_node_size,
+                            in_proportion,
                         );
                     } else {
                         let fit_content_limited_growth_limit =
@@ -909,6 +918,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                             fit_content_limited_growth_limit,
                             IntrinsicContributionType::Maximum,
                             axis_inner_node_size,
+                            in_proportion,
                         );
                     }
                 }
@@ -933,6 +943,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
                     |track| track.growth_limit,
                     IntrinsicContributionType::Maximum,
                     axis_inner_node_size,
+                    in_proportion,
                 );
             }
         }
@@ -1013,6 +1024,7 @@ fn crossed_flex_factor_sum(tracks: &[GridTrack]) -> f32 {
 /// 11.5.1. Distributing Extra Space Across Spanned Tracks
 /// https://www.w3.org/TR/css-grid-1/#extra-space
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn distribute_item_space_to_base_size(
     is_flex: bool,
     space: f32,
@@ -1021,6 +1033,7 @@ fn distribute_item_space_to_base_size(
     track_limit: impl Fn(&GridTrack) -> f32,
     intrinsic_contribution_type: IntrinsicContributionType,
     axis_inner_node_size: Option<f32>,
+    in_proportion: bool,
 ) {
     if is_flex {
         let filter = |track: &GridTrack| track.is_flexible() && track_is_affected(track);
@@ -1039,6 +1052,7 @@ fn distribute_item_space_to_base_size(
                 tracks,
                 filter,
                 |track| track.flex_factor(),
+                |track| track.flex_factor(),
                 track_limit,
                 intrinsic_contribution_type,
                 axis_inner_node_size,
@@ -1049,16 +1063,42 @@ fn distribute_item_space_to_base_size(
                 tracks,
                 filter,
                 |_| 1.0,
+                |_| 1.0,
                 track_limit,
                 intrinsic_contribution_type,
                 axis_inner_node_size,
             )
         }
+    } else if in_proportion {
+        // RINCH: a CSS table's columns ([`crate::Style::proportional_column_sizing`]) share a
+        // spanning cell's contribution as Blink's `DistributeColspanCellToColumnsAuto` does: up to
+        // their limits in proportion to each one's room to grow (so they reach them at once), and
+        // past them in proportion to the limits themselves (their max-content widths). A track
+        // with no finite limit has no room to measure: then all share equally, as a grid's do.
+        let size =
+            |track: &GridTrack| if track.growth_limit == f32::INFINITY { track.base_size } else { track.growth_limit };
+        let affected_finite = tracks
+            .iter()
+            .filter(|t| track_is_affected(t))
+            .all(|t| track_limit(t).is_finite() && t.growth_limit.is_finite());
+        let beyond_by_size = tracks.iter().filter(|t| track_is_affected(t)).map(size).sum::<f32>() > 0.0;
+        let track_limit = &track_limit;
+        distribute_item_space_to_base_size_inner(
+            space,
+            tracks,
+            &track_is_affected,
+            move |track: &GridTrack| if affected_finite { track_limit(track) - track.base_size } else { 1.0 },
+            move |track: &GridTrack| if beyond_by_size { size(track) } else { 1.0 },
+            track_limit,
+            intrinsic_contribution_type,
+            axis_inner_node_size,
+        )
     } else {
         distribute_item_space_to_base_size_inner(
             space,
             tracks,
             track_is_affected,
+            |_| 1.0,
             |_| 1.0,
             track_limit,
             intrinsic_contribution_type,
@@ -1068,11 +1108,13 @@ fn distribute_item_space_to_base_size(
 
     /// Inner function that doesn't account for differences due to distributing to flex items
     /// This difference is handled by the closure passed in above
+    #[allow(clippy::too_many_arguments)]
     fn distribute_item_space_to_base_size_inner(
         space: f32,
         tracks: &mut [GridTrack],
         track_is_affected: impl Fn(&GridTrack) -> bool,
         track_distribution_proportion: impl Fn(&GridTrack) -> f32,
+        beyond_limits_proportion: impl Fn(&GridTrack) -> f32,
         track_limit: impl Fn(&GridTrack) -> f32,
         intrinsic_contribution_type: IntrinsicContributionType,
         axis_inner_node_size: Option<f32>,
@@ -1139,7 +1181,7 @@ fn distribute_item_space_to_base_size(
                 extra_space,
                 tracks,
                 |track| track_is_affected(track) && filter(track),
-                &track_distribution_proportion,
+                &beyond_limits_proportion,
                 get_base_size,
                 |track| track.fit_content_limit(axis_inner_node_size),
             );
@@ -1480,6 +1522,56 @@ fn stretch_auto_tracks(
                 .filter(|track| track.max_track_sizing_function.is_auto())
                 .for_each(|track| track.base_size += extra_space_per_auto_track);
         }
+    }
+}
+
+/// RINCH: 11.8 for a CSS table's columns ([`crate::Style::proportional_column_sizing`]).
+/// The width a table has past every column's maximum (its "max guess") goes, as Blink's
+/// `DistributeInlineSizeToComputedInlineSizeAuto` distributes the excess: to the columns with an
+/// `auto` (intrinsic) max track sizing function and a non-zero size, in proportion to their sizes
+/// (each is at its max-content width here); with none, to the columns with a fixed-length max
+/// (a `<td width=N>` column) in proportion to theirs; with none, to the percentage columns in
+/// proportion to theirs; with none of those either, in equal shares to every column. A grid
+/// stretches only its `auto` tracks, in equal shares.
+#[inline(always)]
+fn distribute_table_excess(
+    axis_tracks: &mut [GridTrack],
+    axis_min_size: Option<f32>,
+    axis_available_space_for_expansion: AvailableSpace,
+) {
+    let used_space: f32 = axis_tracks.iter().map(|track| track.base_size).sum();
+    let free_space = if axis_available_space_for_expansion.is_definite() {
+        axis_available_space_for_expansion.compute_free_space(used_space)
+    } else {
+        match axis_min_size {
+            Some(size) => size - used_space,
+            None => 0.0,
+        }
+    };
+    if free_space <= 0.0 {
+        return;
+    }
+    let column = |track: &GridTrack| track.kind == GridTrackKind::Track && !track.is_collapsed;
+    let auto = |track: &GridTrack| column(track) && track.max_track_sizing_function.is_intrinsic();
+    let fixed = |track: &GridTrack| {
+        let max = track.max_track_sizing_function;
+        column(track) && !max.is_intrinsic() && !max.is_fr() && !max.uses_percentage()
+    };
+    let percent = |track: &GridTrack| column(track) && track.max_track_sizing_function.uses_percentage();
+    let tiers: [&dyn Fn(&GridTrack) -> bool; 3] = [&auto, &fixed, &percent];
+    for tier in tiers {
+        let sum: f32 = axis_tracks.iter().filter(|t| tier(t)).map(|t| t.base_size).sum();
+        if sum > 0.0 {
+            for track in axis_tracks.iter_mut().filter(|t| tier(t)) {
+                track.base_size += free_space * track.base_size / sum;
+            }
+            return;
+        }
+    }
+    let count = axis_tracks.iter().filter(|t| column(t)).count();
+    if count > 0 {
+        let share = free_space / count as f32;
+        axis_tracks.iter_mut().filter(|t| column(t)).for_each(|t| t.base_size += share);
     }
 }
 

@@ -136,3 +136,141 @@ fn a_fixed_width_column_reaches_its_width_before_the_auto_columns_grow() {
     let got = grid_of(&[spacer, auto(), spacer], &[0.0, 50.0, 0.0], None, 600.0, true);
     assert_eq!(got, vec![20.0, 560.0, 20.0]);
 }
+
+/// A leaf of `n` words each `px` wide.
+fn words_of(known: Size<Option<f32>>, avail: Size<AvailableSpace>, (n, px): (f32, f32)) -> Size<f32> {
+    let min = f32::min(px, px * n);
+    let width = known.width.unwrap_or(match avail.width {
+        AvailableSpace::Definite(w) => w.clamp(min, px * n),
+        AvailableSpace::MinContent => min,
+        AvailableSpace::MaxContent => px * n,
+    });
+    let per_line = (width / px).floor().max(1.0);
+    Size { width, height: known.height.unwrap_or((n / per_line).ceil() * 10.0) }
+}
+
+/// A grid `width` wide (`fit-content` when `None`) with a 4px column gap, of
+/// one row of leaves `(words, word px)` in columns `tracks`, and an optional
+/// second row of one leaf spanning every column. Returns the first row's
+/// widths and the grid's width.
+fn table(
+    width: Option<f32>,
+    tracks: &[TrackSizingFunction],
+    cells: &[(f32, f32)],
+    spanning: Option<(f32, f32)>,
+) -> (Vec<f32>, f32) {
+    let mut tree: TaffyTree<(f32, f32)> = TaffyTree::new();
+    tree.disable_rounding();
+    let mut items: Vec<NodeId> =
+        cells.iter().map(|&c| tree.new_leaf_with_context(Style::default(), c).unwrap()).collect();
+    let n = items.len();
+    if let Some(c) = spanning {
+        let style = Style {
+            grid_row: Line { start: line(2), end: line(3) },
+            grid_column: Line { start: line(1), end: line(n as i16 + 1) },
+            ..Default::default()
+        };
+        items.push(tree.new_leaf_with_context(style, c).unwrap());
+    }
+    let root = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: width.map(length).unwrap_or(Dimension::fit_content()), height: auto() },
+                gap: Size { width: length(4.0), height: length(0.0) },
+                grid_template_columns: tracks.iter().map(|t| GridTemplateComponent::Single(*t)).collect(),
+                proportional_column_sizing: true,
+                ..Default::default()
+            },
+            &items,
+        )
+        .unwrap();
+    tree.compute_layout_with_measure(
+        root,
+        Size { width: AvailableSpace::Definite(1000.0), height: AvailableSpace::MaxContent },
+        |inputs, _, ctx, _| {
+            taffy::LayoutOutput::from_outer_size(words_of(
+                inputs.known_dimensions,
+                inputs.available_space,
+                *ctx.unwrap(),
+            ))
+        },
+    )
+    .unwrap();
+    let cols = items[..n].iter().map(|&i| tree.layout(i).unwrap().size.width).collect();
+    (cols, tree.layout(root).unwrap().size.width)
+}
+
+fn assert_near(got: &[f32], want: &[f32]) {
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(want) {
+        assert!((g - w).abs() < 0.05, "{got:?} vs {want:?}");
+    }
+}
+
+fn mc_auto() -> TrackSizingFunction {
+    minmax(min_content(), auto())
+}
+
+#[test]
+fn a_grid_of_a_given_width_shares_it_by_each_columns_room_to_grow() {
+    // A table with a width of its own, below its columns' max-content: 592
+    // past the gaps, min 40 each, max 800 / 200 / 80 / 400: r = 432 / 1320.
+    let (got, w) = table(
+        Some(604.0),
+        &[mc_auto(), mc_auto(), mc_auto(), mc_auto()],
+        &[(20.0, 40.0), (5.0, 40.0), (2.0, 40.0), (10.0, 40.0)],
+        None,
+    );
+    let r = 432.0 / 1320.0;
+    assert_near(&got, &[40.0 + 760.0 * r, 40.0 + 160.0 * r, 40.0 + 40.0 * r, 40.0 + 360.0 * r]);
+    assert_eq!(w, 604.0);
+}
+
+#[test]
+fn fixed_columns_narrower_than_their_widths_grow_from_their_minimums() {
+    // `<td width=390>` (min 0), `<td width=305>` (min 100) in 604: 600 past the
+    // gap, r = 500 / 595 (Chrome 156's interpolation for #2306).
+    let (got, _) = table(
+        Some(604.0),
+        &[minmax(min_content(), length(390.0)), minmax(min_content(), length(305.0))],
+        &[(0.0, 40.0), (1.0, 100.0)],
+        None,
+    );
+    let r = 500.0 / 595.0;
+    assert_near(&got, &[390.0 * r, 100.0 + 205.0 * r]);
+}
+
+#[test]
+fn the_excess_past_max_content_goes_to_the_auto_columns_by_their_max_content() {
+    // A 100px fixed column and auto columns of max 120 / 80 in 704 (700 past
+    // the gaps): the auto columns take the 400 excess 3:2.
+    let (got, _) = table(
+        Some(708.0),
+        &[minmax(min_content(), length(100.0)), mc_auto(), mc_auto()],
+        &[(1.0, 40.0), (3.0, 40.0), (2.0, 40.0)],
+        None,
+    );
+    assert_near(&got, &[100.0, 360.0, 240.0]);
+    // With fixed columns only, they take it by their widths.
+    let f = |p| minmax(min_content(), length(p));
+    let (got, _) = table(Some(708.0), &[f(100.0), f(200.0), f(50.0)], &[(1.0, 40.0), (1.0, 40.0), (1.0, 40.0)], None);
+    assert_near(&got, &[200.0, 400.0, 100.0]);
+}
+
+#[test]
+fn a_spanning_items_min_content_goes_to_its_columns_by_their_max_content() {
+    // Columns of min 40 / 40 and max 120 / 40 under one unbreakable 300px
+    // leaf (296 past the gap): the 136 past their max-content goes 3:1.
+    let (got, w) = table(None, &[auto(), auto()], &[(3.0, 40.0), (1.0, 40.0)], Some((1.0, 300.0)));
+    assert_near(&got, &[120.0 + 102.0, 40.0 + 34.0]);
+    assert_eq!(w, 300.0);
+}
+
+#[test]
+fn a_grid_of_a_given_width_widens_to_its_columns_minimum() {
+    // Minimums of 300 and 50 and a 4px gap past a declared 100.
+    let (got, w) = table(Some(100.0), &[mc_auto(), mc_auto()], &[(1.0, 300.0), (1.0, 50.0)], None);
+    assert_eq!(got, vec![300.0, 50.0]);
+    assert_eq!(w, 354.0);
+}

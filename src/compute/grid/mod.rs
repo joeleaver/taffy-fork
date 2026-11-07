@@ -386,6 +386,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .maybe_clamp(min_size.height, max_size.height)
             .max(padding_border_size.height),
     };
+    // RINCH: a CSS table that resolves its own width ([`crate::Style::proportional_column_sizing`],
+    // and no width imposed by its parent) is never narrower than its columns' minimum: CSS 2.1
+    // §17.5.2.2 makes the used width of an automatic-layout table the greater of its `width` and
+    // the width its columns need. A grid's tracks overflow it instead.
+    if proportional_column_sizing && known_dimensions.width.is_none() {
+        container_border_box.width =
+            f32_max(container_border_box.width, initial_column_sum + content_box_inset.horizontal_axis_sum());
+    }
     let mut container_content_box = Size {
         width: f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum()),
         height: f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum()),
