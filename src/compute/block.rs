@@ -2029,8 +2029,9 @@ fn perform_absolute_layout_on_absolute_children(
             SizingMode::ContentSize,
             Line::FALSE,
         );
-        // RINCH: an absolutely positioned table is never shorter than its rows, whatever its
-        // `height` or insets give it (Chrome 156, rinch #2358).
+        // RINCH: an absolutely positioned table is never shorter than its rows, whatever height
+        // its `height` or insets give it (Chrome 156, rinch #2358). Insets that give it more than
+        // its rows still stretch it, where Chrome does not (rinch #2403).
         let final_size = if resolves_own_height {
             Size { width: final_size.width, height: f32_max(final_size.height, layout_output.size.height) }
         } else {
