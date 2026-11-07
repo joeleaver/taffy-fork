@@ -25,6 +25,14 @@ pub trait BlockItemStyle: CoreStyle {
         false
     }
 
+    /// RINCH: whether the item is a table that resolves its own height: its `height` is the
+    /// least it is, and it grows to its rows ([`crate::Style::table_rows`]). Block layout hands
+    /// it no height.
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        false
+    }
+
     /// Whether the item is a floated
     #[cfg(feature = "float_layout")]
     #[inline(always)]

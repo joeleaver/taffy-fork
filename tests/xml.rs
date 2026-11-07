@@ -405,6 +405,7 @@ fn build_style<S: CheapCloneStr>(xnode: roxmltree::Node) -> taffy::Style<S> {
         stretch_past_max_width: false,
         proportional_column_sizing: false,
         fill_max_content: false,
+        table_rows: None,
         align_content: maybe_parse(xnode.attribute("align-content")),
         justify_content: maybe_parse(xnode.attribute("justify-content")),
 

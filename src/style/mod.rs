@@ -36,7 +36,7 @@ pub use self::grid::{
     ExpandedMaxTrackSizingFunction, ExpandedMinTrackSizingFunction, GenericGridPlacement, GenericGridTemplateComponent,
     GenericRepetition, GridAutoFlow, GridAutoTracks, GridContainerStyle, GridItemStyle, GridPlacement,
     GridTemplateComponent, GridTemplateRepetition, GridTemplateTracks, MaxTrackSizingFunction, MinTrackSizingFunction,
-    RepetitionCount, TrackSizingFunction,
+    RepetitionCount, TableRow, TableRows, TrackSizingFunction,
 };
 #[cfg(feature = "grid")]
 pub(crate) use self::grid::{GridAreaAxis, GridAreaEnd};
@@ -703,6 +703,26 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// room, where the content's width would leave it narrow.
     #[cfg(feature = "grid")]
     pub fill_max_content: bool,
+    /// RINCH: size the rows (the block axis) as a CSS table sizes its rows, in place of the grid
+    /// track sizing algorithm (CSS 2.2 §17.5.3; Blink's `ComputeSectionMinimumRowBlockSizes`,
+    /// `DistributeRowspanCellToRows` and `DistributeTableBlockSizeToSections`):
+    ///
+    /// - Each row is as tall as its tallest cell of span 1, and at least its track's minimum (a
+    ///   row's `height`, written as `minmax(<height>, auto)`). A row with a length minimum, or a
+    ///   cell of span 1 with a length `min_size.height`, is *constrained*.
+    /// - A spanning cell taller than its rows grows them: first the rows (past the first) where
+    ///   another spanning cell starts, equally; else the unconstrained non-empty rows, in
+    ///   proportion to their heights; else the empty ones (all of it to the last when every row
+    ///   is empty); else every non-empty row in proportion to its height.
+    /// - When [`TableRows::sized`], a table taller than its rows gives the extra height to its
+    ///   body sections (in proportion to their heights), and each section to its rows as above,
+    ///   but with no rowspan step and with empty rows growing only when every non-empty one is
+    ///   constrained. A caption takes none of it. A table shorter than its rows (and captions)
+    ///   grows to them, unless its height was imposed by its parent.
+    ///
+    /// Percentage row heights are not modelled.
+    #[cfg(feature = "grid")]
+    pub table_rows: Option<TableRows>,
     /// How this node should be aligned in the inline axis
     /// Falls back to the parents [`JustifyItems`] if not set
     #[cfg(feature = "grid")]
@@ -837,6 +857,8 @@ impl<S: CheapCloneStr> Style<S> {
         proportional_column_sizing: false,
         #[cfg(feature = "grid")]
         fill_max_content: false,
+        #[cfg(feature = "grid")]
+        table_rows: None,
         #[cfg(feature = "grid")]
         justify_self: None,
         #[cfg(feature = "grid")]
@@ -1074,6 +1096,14 @@ impl<S: CheapCloneStr> BlockItemStyle for Style<S> {
         self.item_is_table
     }
 
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        #[cfg(feature = "grid")]
+        return self.table_rows.as_ref().is_some_and(|t| t.sized);
+        #[cfg(not(feature = "grid"))]
+        false
+    }
+
     #[cfg(feature = "float_layout")]
     #[inline(always)]
     fn float(&self) -> Float {
@@ -1092,6 +1122,11 @@ impl<T: BlockItemStyle> BlockItemStyle for &'_ T {
     #[inline(always)]
     fn is_table(&self) -> bool {
         (*self).is_table()
+    }
+
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        (*self).resolves_own_height()
     }
 
     #[cfg(feature = "float_layout")]
@@ -1292,6 +1327,10 @@ impl<S: CheapCloneStr> GridContainerStyle for Style<S> {
     fn fill_max_content(&self) -> bool {
         self.fill_max_content
     }
+    #[inline(always)]
+    fn table_rows(&self) -> Option<&TableRows> {
+        self.table_rows.as_ref()
+    }
 
     #[inline(always)]
     #[cfg(feature = "grid")]
@@ -1422,6 +1461,10 @@ impl<T: GridContainerStyle> GridContainerStyle for &'_ T {
     fn fill_max_content(&self) -> bool {
         (*self).fill_max_content()
     }
+    #[inline(always)]
+    fn table_rows(&self) -> Option<&TableRows> {
+        (*self).table_rows()
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1518,6 +1561,8 @@ mod tests {
             proportional_column_sizing: false,
             #[cfg(feature = "grid")]
             fill_max_content: false,
+            #[cfg(feature = "grid")]
+            table_rows: None,
             #[cfg(feature = "grid")]
             justify_self: Default::default(),
             #[cfg(feature = "grid")]
@@ -1668,12 +1713,12 @@ mod tests {
         assert_type_size::<GridTemplateComponent<String>>(56);
         assert_type_size::<GridPlacement<String>>(32);
         assert_type_size::<Line<GridPlacement<String>>>(64);
-        assert_type_size::<Style<String>>(560);
+        assert_type_size::<Style<String>>(592);
 
         // String-type dependent (Arc<str>)
         assert_type_size::<GridTemplateComponent<Arc<str>>>(56);
         assert_type_size::<GridPlacement<Arc<str>>>(24);
         assert_type_size::<Line<GridPlacement<Arc<str>>>>(48);
-        assert_type_size::<Style<Arc<str>>>(528);
+        assert_type_size::<Style<Arc<str>>>(560);
     }
 }

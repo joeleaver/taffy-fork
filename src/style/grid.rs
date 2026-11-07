@@ -255,6 +255,12 @@ pub trait GridContainerStyle: CoreStyle {
     fn proportional_column_sizing(&self) -> bool {
         Style::<Self::CustomIdent>::DEFAULT.proportional_column_sizing
     }
+    /// Whether the block axis sizes its tracks as a CSS table sizes its rows
+    /// ([`crate::Style::table_rows`])
+    #[inline(always)]
+    fn table_rows(&self) -> Option<&TableRows> {
+        None
+    }
     /// Whether an unresolvable percentage width makes the max-content width fill
     /// ([`crate::Style::fill_max_content`])
     #[inline(always)]
@@ -1931,4 +1937,31 @@ mod expand_tests {
         );
         assert_eq!(MinTrackSizingFunction::calc(handle).expand(), ExpandedMinTrackSizingFunction::Calc(handle));
     }
+}
+
+/// RINCH: one row of a CSS table, for [`TableRows`].
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TableRow {
+    /// A table caption's row: as tall as its content, and given no share of the table's height.
+    pub caption: bool,
+    /// The row group (section) the row belongs to. A section's rows are consecutive, and a
+    /// `rowspan` stays inside its section.
+    pub section: u16,
+    /// Whether the row's section is body-like (a `tbody`, or the anonymous group of bare rows),
+    /// which takes a taller table's extra height before a header or footer does.
+    pub body: bool,
+}
+
+/// RINCH: size a grid's rows as a CSS table sizes its rows ([`crate::Style::table_rows`]).
+#[derive(Clone, PartialEq, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TableRows {
+    /// One entry per row track, from the first grid line. Rows past the end are body rows of
+    /// section 0.
+    pub rows: Vec<TableRow>,
+    /// Whether the grid's own height is the table's: shared between its rows when it is taller
+    /// than them, and grown to them when it is shorter (CSS 2.2 §17.5.3). `false` for a block
+    /// standing for an anonymous table, whose height is its own.
+    pub sized: bool,
 }

@@ -16,6 +16,7 @@ use alignment::{align_and_position_item, align_tracks};
 use explicit_grid::{compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy};
 use implicit_grid::compute_grid_size_estimate;
 use placement::place_grid_items;
+use table_rows::size_table_rows;
 use track_sizing::{
     determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes, track_sizing_algorithm,
 };
@@ -37,6 +38,7 @@ mod alignment;
 mod explicit_grid;
 mod implicit_grid;
 mod placement;
+mod table_rows;
 mod track_sizing;
 mod types;
 mod util;
@@ -131,6 +133,9 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let align_items = style.align_items();
     let justify_items = style.justify_items();
     let proportional_column_sizing = style.proportional_column_sizing();
+    // RINCH: a CSS table's rows ([`crate::Style::table_rows`]).
+    let table_rows = style.table_rows().cloned();
+    let table_sized = table_rows.as_ref().is_some_and(|t| t.sized);
 
     // Note: we avoid accessing the grid rows/columns methods more than once as this can
     // cause an expensive-ish computation
@@ -190,7 +195,8 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
     // Short-circuit layout if the container's size is fully determined by the container's size and the run mode
     // is ComputeSize (and thus the container's size is all that we're interested in)
-    if run_mode == RunMode::ComputeSize {
+    // (RINCH: not for a table that grows to its rows.)
+    if run_mode == RunMode::ComputeSize && !table_sized {
         if let Size { width: Some(width), height: Some(height) } = outer_node_size {
             return LayoutOutput::from_outer_size(Size { width, height });
         }
@@ -366,22 +372,37 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     items.iter_mut().for_each(|item| item.grid_area_size_cache = None);
 
     // Run track sizing algorithm for Block axis
-    track_sizing_algorithm(
-        tree,
-        AbstractAxis::Block,
-        inner_min_size.get(AbstractAxis::Block),
-        inner_max_size.get(AbstractAxis::Block),
-        align_content,
-        justify_content,
-        available_grid_space,
-        inner_node_size,
-        &mut rows,
-        &mut columns,
-        &mut items,
-        |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
-        false,
-    );
+    // RINCH: a table sizes its rows as a table does.
+    let table_height = inner_node_size.height.or(inner_min_size.height);
+    if let Some(table) = &table_rows {
+        size_table_rows(
+            tree,
+            table,
+            &mut rows,
+            &columns,
+            &mut items,
+            inner_node_size,
+            final_row_counts.negative_implicit as usize,
+            table_height,
+        );
+    } else {
+        track_sizing_algorithm(
+            tree,
+            AbstractAxis::Block,
+            inner_min_size.get(AbstractAxis::Block),
+            inner_max_size.get(AbstractAxis::Block),
+            align_content,
+            justify_content,
+            available_grid_space,
+            inner_node_size,
+            &mut rows,
+            &mut columns,
+            &mut items,
+            |track: &GridTrack, _, _| Some(track.base_size),
+            false, // TODO: Support baseline alignment in the vertical axis
+            false,
+        );
+    }
     let initial_row_sum = rows.iter().map(|track| track.base_size).sum::<f32>();
     inner_node_size.height = inner_node_size.height.or_else(|| initial_row_sum.into());
 
@@ -411,6 +432,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     if proportional_column_sizing && known_dimensions.width.is_none() {
         container_border_box.width =
             f32_max(container_border_box.width, initial_column_sum + content_box_inset.horizontal_axis_sum());
+    }
+    // RINCH: a table is never shorter than its rows and captions (CSS 2.2 §17.5.3), unless its
+    // parent imposed its height.
+    if table_sized && known_dimensions.height.is_none() {
+        container_border_box.height =
+            f32_max(container_border_box.height, initial_row_sum + content_box_inset.vertical_axis_sum());
     }
     let mut container_content_box = Size {
         width: f32_max(0.0, container_border_box.width - content_box_inset.horizontal_axis_sum()),
@@ -562,22 +589,35 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
 
         if rerun_row_sizing {
             // Re-run track sizing algorithm for Block axis
-            track_sizing_algorithm(
-                tree,
-                AbstractAxis::Block,
-                inner_min_size.get(AbstractAxis::Block),
-                inner_max_size.get(AbstractAxis::Block),
-                align_content,
-                justify_content,
-                available_grid_space,
-                inner_node_size,
-                &mut rows,
-                &mut columns,
-                &mut items,
-                |track: &GridTrack, _, _| Some(track.base_size),
-                false, // TODO: Support baseline alignment in the vertical axis
-                false,
-            );
+            if let Some(table) = &table_rows {
+                size_table_rows(
+                    tree,
+                    table,
+                    &mut rows,
+                    &columns,
+                    &mut items,
+                    inner_node_size,
+                    final_row_counts.negative_implicit as usize,
+                    table_height,
+                );
+            } else {
+                track_sizing_algorithm(
+                    tree,
+                    AbstractAxis::Block,
+                    inner_min_size.get(AbstractAxis::Block),
+                    inner_max_size.get(AbstractAxis::Block),
+                    align_content,
+                    justify_content,
+                    available_grid_space,
+                    inner_node_size,
+                    &mut rows,
+                    &mut columns,
+                    &mut items,
+                    |track: &GridTrack, _, _| Some(track.base_size),
+                    false, // TODO: Support baseline alignment in the vertical axis
+                    false,
+                );
+            }
         }
     }
 
@@ -603,6 +643,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 .unwrap_or_else(|| final_row_sum + content_box_inset.vertical_axis_sum())
                 .maybe_clamp(min_size.height, max_size.height)
                 .max(padding_border_size.height);
+            if table_sized && known_dimensions.height.is_none() {
+                container_border_box.height =
+                    f32_max(container_border_box.height, final_row_sum + content_box_inset.vertical_axis_sum());
+            }
             container_content_box.height =
                 f32_max(0.0, container_border_box.height - content_box_inset.vertical_axis_sum());
         }

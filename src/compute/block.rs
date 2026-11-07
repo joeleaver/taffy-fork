@@ -367,6 +367,10 @@ struct BlockItem {
     /// Items that are tables don't have stretch sizing applied to them
     is_table: bool,
 
+    /// RINCH: a table that resolves its own height (`BlockItemStyle::resolves_own_height`) is
+    /// handed no height: its `height` is a minimum, and it grows to its rows
+    resolves_own_height: bool,
+
     /// Items that are replaced elements resolve an auto width to their intrinsic size
     /// rather than being stretch-sized
     /// <https://www.w3.org/TR/CSS22/visudet.html#block-replaced-width>
@@ -939,6 +943,7 @@ fn generate_item_list(
                 node_id: child_node_id,
                 order: order as u32,
                 is_table,
+                resolves_own_height: child_style.resolves_own_height(),
                 is_replaced,
                 is_in_same_bfc,
                 #[cfg(feature = "float_layout")]
@@ -1500,6 +1505,7 @@ fn perform_final_layout_on_in_flow_children(
                     })
                     .map_height(|height| height.or(keyword_height))
                     .maybe_clamp(item.min_size, item.max_size)
+                    .map_height(|height| if item.resolves_own_height { None } else { height })
             };
 
             //
