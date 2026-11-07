@@ -49,9 +49,9 @@ fn layout(case: Case) -> (f32, f32) {
         items.push(tree.new_with_children(item, &[leaf]).unwrap());
     }
     let container = tree.new_with_children(Style { margin: margins(), ..case.container }, &items).unwrap();
-    let parent = tree
-        .new_with_children(Style { size: Size { width: length(300.0), height: auto() }, ..case.parent }, &[container])
-        .unwrap();
+    let mut parent_style = case.parent;
+    parent_style.size.width = length(300.0);
+    let parent = tree.new_with_children(parent_style, &[container]).unwrap();
     let root = tree
         .new_with_children(
             Style {
@@ -296,4 +296,13 @@ fn a_float_wrapping_row_with_padding() {
         ..floated(row())
     };
     assert_eq!(layout(Case { parent: block(), container, items: vec![fixed; 3] }).0, 260.0);
+}
+
+/// A column's main size is its height, its max-content size even where the
+/// room is definite and shorter: 2 x 40, in a parent 30 tall.
+#[test]
+fn a_float_column_taller_than_its_parent() {
+    let parent = Style { size: Size { width: auto(), height: length(30.0) }, ..block() };
+    let container = Style { flex_direction: FlexDirection::Column, ..floated(row()) };
+    assert_eq!(layout(Case { parent, container, items: items(2) }).1, 80.0);
 }
