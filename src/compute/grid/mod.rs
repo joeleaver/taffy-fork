@@ -433,9 +433,10 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         container_border_box.width =
             f32_max(container_border_box.width, initial_column_sum + content_box_inset.horizontal_axis_sum());
     }
-    // RINCH: a table is never shorter than its rows and captions (CSS 2.2 §17.5.3), unless its
-    // parent imposed its height.
-    if table_sized && known_dimensions.height.is_none() {
+    // RINCH: a table is never shorter than its rows and captions (CSS 2.2 §17.5.3), whether its
+    // height is its own or its parent's (a flex item, a grid item, an absolutely positioned table:
+    // Chrome 156 grows each, rinch #2358). The parent lays it out at the height it returns.
+    if table_sized {
         container_border_box.height =
             f32_max(container_border_box.height, initial_row_sum + content_box_inset.vertical_axis_sum());
     }
@@ -643,7 +644,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                 .unwrap_or_else(|| final_row_sum + content_box_inset.vertical_axis_sum())
                 .maybe_clamp(min_size.height, max_size.height)
                 .max(padding_border_size.height);
-            if table_sized && known_dimensions.height.is_none() {
+            if table_sized {
                 container_border_box.height =
                     f32_max(container_border_box.height, final_row_sum + content_box_inset.vertical_axis_sum());
             }

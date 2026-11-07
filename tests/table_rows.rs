@@ -172,3 +172,93 @@ fn sections_share_a_taller_table_by_their_heights_before_rowspans() {
     let got = heights(&tree, &[a, b, c, s]);
     assert!(close(&got, &[50.0, 100.0, 50.0, 150.0]), "{got:?}");
 }
+
+#[test]
+fn no_gap_beside_a_caption_row() {
+    // rinch #2350: a caption is outside the table box, so no spacing separates
+    // it from the rows or from another caption. Captions of 4 and 6 above rows
+    // of 10 and 12, a 3px gap and 3px of padding: the captions at 3 and 7,
+    // the rows at 13 and 26 (the gap stays between them), the table 41 tall.
+    // (The embedder takes the padding out of a caption's margins.)
+    let mut tree: TaffyTree<()> = TaffyTree::new();
+    let c1 = cell(&mut tree, 1, 1, 4.0, None);
+    let c2 = cell(&mut tree, 2, 1, 6.0, None);
+    let a = cell(&mut tree, 3, 1, 10.0, None);
+    let b = cell(&mut tree, 4, 1, 12.0, None);
+    let mut kinds = body(4);
+    kinds[0].caption = true;
+    kinds[1].caption = true;
+    let t = table(&mut tree, &[None; 4], kinds, 3.0, auto(), &[c1, c2, a, b]);
+    let ys: Vec<f32> = [c1, c2, a, b].iter().map(|&n| tree.unrounded_layout(n).location.y).collect();
+    assert_eq!(ys, [3.0, 7.0, 13.0, 26.0]);
+    assert_eq!(tree.unrounded_layout(t).size.height, 41.0);
+
+    // A caption below: no gap above it either.
+    let mut tree: TaffyTree<()> = TaffyTree::new();
+    let a = cell(&mut tree, 1, 1, 10.0, None);
+    let c = cell(&mut tree, 2, 1, 5.0, None);
+    let mut kinds = body(2);
+    kinds[1].caption = true;
+    let t = table(&mut tree, &[None; 2], kinds, 3.0, auto(), &[a, c]);
+    assert_eq!(tree.unrounded_layout(c).location.y, 13.0);
+    assert_eq!(tree.unrounded_layout(t).size.height, 21.0);
+}
+
+/// A table of two declared rows (30 and 35), no gap, with `extra` on its style.
+fn imposed_table(tree: &mut TaffyTree<()>, extra: impl FnOnce(&mut Style)) -> NodeId {
+    let a = cell(tree, 1, 1, 0.0, None);
+    let b = cell(tree, 2, 1, 0.0, None);
+    let mut style = Style {
+        display: Display::Grid,
+        grid_template_columns: vec![GridTemplateComponent::Single(auto())],
+        grid_template_rows: vec![
+            GridTemplateComponent::Single(minmax(length(30.0), auto())),
+            GridTemplateComponent::Single(minmax(length(35.0), auto())),
+        ],
+        table_rows: Some(TableRows { rows: body(2), sized: true }),
+        ..Default::default()
+    };
+    extra(&mut style);
+    tree.new_with_children(style, &[a, b]).unwrap()
+}
+
+#[test]
+fn a_table_grows_to_its_rows_whatever_height_its_parent_hands_it() {
+    // rinch #2358: Chrome 156 gives each of these 65.
+    let container = |display: Display, extra: fn(&mut Style)| {
+        let mut tree: TaffyTree<()> = TaffyTree::new();
+        let t = imposed_table(&mut tree, extra);
+        let root = tree
+            .new_with_children(
+                Style {
+                    display,
+                    flex_direction: FlexDirection::Column,
+                    grid_template_rows: vec![GridTemplateComponent::Single(length(43.0))],
+                    size: Size { width: length(300.0), height: length(300.0) },
+                    ..Default::default()
+                },
+                &[t],
+            )
+            .unwrap();
+        tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        tree.unrounded_layout(t).size.height
+    };
+    let height = |s: &mut Style| s.size.height = length(47.0);
+    let abspos = |s: &mut Style| {
+        s.position = Position::Absolute;
+        s.size.height = length(47.0);
+    };
+    // A column flex item with a `height`, and a grid item stretched to a 43px track.
+    assert_eq!(container(Display::Flex, height), 65.0);
+    assert_eq!(container(Display::Grid, |_| {}), 65.0);
+    // Absolutely positioned in a block, a flex and a grid container.
+    assert_eq!(container(Display::Block, abspos), 65.0);
+    assert_eq!(container(Display::Flex, abspos), 65.0);
+    assert_eq!(container(Display::Grid, abspos), 65.0);
+    // Not a table: the grid keeps the height it was handed.
+    let not_table = |s: &mut Style| {
+        s.size.height = length(47.0);
+        s.table_rows = None;
+    };
+    assert_eq!(container(Display::Flex, not_table), 47.0);
+}

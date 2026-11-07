@@ -319,6 +319,14 @@ pub trait GridItemStyle: CoreStyle {
         Style::<Self::CustomIdent>::DEFAULT.stretch_past_max_width
     }
 
+    /// RINCH: whether the item is a table that grows to its rows ([`crate::Style::table_rows`]):
+    /// a height its grid area hands it is the least it is, as Chrome 156 treats a table grid
+    /// item (rinch #2358).
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        false
+    }
+
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
     fn grid_placement(&self, axis: AbsoluteAxis) -> Line<GridPlacement<Self::CustomIdent>> {

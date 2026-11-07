@@ -2843,6 +2843,7 @@ fn perform_absolute_layout_on_absolute_children(
             .maybe_apply_aspect_ratio(aspect_ratio)
             .maybe_add(box_sizing_adjustment);
         let mut known_dimensions = style_size.maybe_clamp(min_size, max_size);
+        let resolves_own_height = child_style.resolves_own_height();
 
         drop(child_style);
 
@@ -2920,6 +2921,13 @@ fn perform_absolute_layout_on_absolute_children(
             SizingMode::ContentSize,
             Line::FALSE,
         );
+        // RINCH: an absolutely positioned table is never shorter than its rows, whatever its
+        // `height` or insets give it (Chrome 156, rinch #2358).
+        let final_size = if resolves_own_height {
+            Size { width: final_size.width, height: f32_max(final_size.height, layout_output.size.height) }
+        } else {
+            final_size
+        };
 
         let non_auto_margin = margin.map(|m| m.unwrap_or(0.0));
 

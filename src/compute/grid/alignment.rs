@@ -122,6 +122,7 @@ pub(super) fn align_and_position_item(
 
     let position = style.position();
     let stretch_past_max_width = style.stretch_past_max_width();
+    let resolves_own_height = style.resolves_own_height();
     let inset_horizontal = style
         .inset()
         .horizontal_components()
@@ -366,7 +367,12 @@ pub(super) fn align_and_position_item(
     );
 
     // Resolve final size
-    let Size { width, height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
+    let Size { width, mut height } = size.unwrap_or(layout_output.size).maybe_clamp(min_size, max_size);
+    // RINCH: a table is never shorter than its rows, whatever height its area hands it (rinch
+    // #2358): it overflows a shorter track, as in Chrome 156.
+    if resolves_own_height {
+        height = f32_max(height, layout_output.size.height);
+    }
 
     let (x, x_margin) = align_item_within_area(
         Line { start: grid_area.left, end: grid_area.right },

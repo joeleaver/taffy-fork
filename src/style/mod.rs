@@ -1227,6 +1227,13 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
     fn align_self(&self) -> Option<AlignSelf> {
         self.align_self
     }
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        #[cfg(feature = "grid")]
+        return self.table_rows.as_ref().is_some_and(|t| t.sized);
+        #[cfg(not(feature = "grid"))]
+        false
+    }
 }
 
 #[cfg(feature = "flexbox")]
@@ -1246,6 +1253,10 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
     #[inline(always)]
     fn align_self(&self) -> Option<AlignSelf> {
         (*self).align_self()
+    }
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        (*self).resolves_own_height()
     }
 }
 
@@ -1492,6 +1503,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
     fn stretch_past_max_width(&self) -> bool {
         self.stretch_past_max_width
     }
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        self.table_rows.as_ref().is_some_and(|t| t.sized)
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1515,6 +1530,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn stretch_past_max_width(&self) -> bool {
         (*self).stretch_past_max_width()
+    }
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        (*self).resolves_own_height()
     }
 }
 

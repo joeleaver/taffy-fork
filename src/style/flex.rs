@@ -73,6 +73,13 @@ pub trait FlexboxItemStyle: CoreStyle {
     fn align_self(&self) -> Option<AlignSelf> {
         Style::<Self::CustomIdent>::DEFAULT.align_self
     }
+
+    /// RINCH: whether the item is a table that grows to its rows ([`crate::Style::table_rows`]):
+    /// a height an absolutely positioned one is handed is the least it is (rinch #2358).
+    #[inline(always)]
+    fn resolves_own_height(&self) -> bool {
+        false
+    }
 }
 
 use crate::geometry::AbsoluteAxis;
