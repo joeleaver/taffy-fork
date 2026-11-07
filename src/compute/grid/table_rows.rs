@@ -101,6 +101,14 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
             }
         })
         .collect();
+    // A caption is outside the table box (CSS 2.2 §17.4), so no spacing separates it from the
+    // rows or from another caption: the gutters on either side of a caption row are empty. The
+    // table's padding (its outer spacing) is the embedder's to take out of the caption's margins.
+    for k in 0..count.saturating_sub(1) {
+        if kind(k).caption || kind(k + 1).caption {
+            axis_tracks[2 * k + 2].base_size = 0.0;
+        }
+    }
     let gap = |k: usize, tracks: &[GridTrack]| tracks.get(2 * k + 2).map_or(0.0, |t| t.base_size);
 
     // Each cell of span 1 sets its row's least height; the spanning ones are kept for later.
