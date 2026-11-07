@@ -317,3 +317,36 @@ fn padding_on_top_of_the_min_content() {
     };
     assert_eq!(layout(Case { parent: block(), container, items: items(2) }).0, 270.0);
 }
+
+/// Like [`layout`], but each item is a text leaf itself (rinch's IFC leaf),
+/// with the given style; the leaf's measure is not clamped by its max size.
+fn layout_leaf_items(container: Style, items: Vec<Style>) -> f32 {
+    let mut tree: TaffyTree<bool> = TaffyTree::new();
+    let items: Vec<_> = items.into_iter().map(|s| tree.new_leaf_with_context(s, true).unwrap()).collect();
+    let container = tree.new_with_children(Style { margin: margins(), ..container }, &items).unwrap();
+    let parent = tree
+        .new_with_children(Style { size: Size { width: length(300.0), height: auto() }, ..block() }, &[container])
+        .unwrap();
+    tree.compute_layout_with_measure(parent, Size::MAX_CONTENT, |inputs, _, ctx, style| match ctx {
+        Some(true) => compute_leaf_layout(inputs, style, |_, _| 0.0, text),
+        _ => compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO),
+    })
+    .unwrap();
+    tree.layout(container).unwrap().size.width
+}
+
+/// An item's max-width caps its max-content contribution (rinch #2389
+/// review): 80 + 50 fits the room. Chrome 156 makes `max-width: 80px` text
+/// beside "alpha" 121.11 wide; it was the room. A min-width above the max
+/// wins: 120 + 50.
+#[test]
+fn an_item_max_width_caps_the_max_content() {
+    let capped = Style { max_size: Size { width: length(80.0), height: auto() }, ..block() };
+    let fixed = Style { size: Size { width: length(50.0), height: auto() }, ..block() };
+    for wrap in [FlexWrap::NoWrap, FlexWrap::Wrap] {
+        let container = Style { flex_wrap: wrap, ..floated(row()) };
+        assert_eq!(layout_leaf_items(container, vec![capped.clone(), fixed.clone()]), 130.0, "{wrap:?}");
+    }
+    let floored = Style { min_size: Size { width: length(120.0), height: auto() }, ..capped };
+    assert_eq!(layout_leaf_items(floated(row()), vec![floored, fixed]), 170.0);
+}

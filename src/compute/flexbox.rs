@@ -1645,7 +1645,10 @@ fn fit_content_main_size(
     let basis_overrides_content =
         |item: &FlexItem| item.flex_basis_is_definite && item.size.main(dir).is_none() && item.aspect_ratio.is_none();
 
-    let max_content = if !constants.is_wrap && !items().any(basis_overrides_content) {
+    // An item with a max size contributes its basis capped by it, which its hypothetical size in
+    // `longest_line` is not (rinch #2389 review).
+    let has_max_size = |item: &FlexItem| item.max_size.main(dir).is_some();
+    let max_content = if !constants.is_wrap && !items().any(basis_overrides_content) && !items().any(has_max_size) {
         // One line, every item at its max-content basis.
         longest_line
     } else {
@@ -1655,7 +1658,7 @@ fn fit_content_main_size(
             sum += if basis_overrides_content(item) {
                 item_intrinsic_main_contribution(tree, item, max_content_space, constants, false)
             } else {
-                hypothetical_outer_main_length(item, constants)
+                max_content_outer_length(item, constants)
             };
         }
         sum + sum_axis_gaps(gap, item_count) + inset
@@ -1679,6 +1682,17 @@ fn fit_content_main_size(
         min_content += sum_axis_gaps(gap, item_count);
     }
     f32_min(max_content, f32_max(min_content + inset, room))
+}
+
+/// The outer max-content contribution of an item whose basis is its max-content size (or its
+/// preferred size): the basis clamped by its max and then its min main size (a min size above
+/// the max wins), its margins added, and never less than its padding and border.
+fn max_content_outer_length(item: &FlexItem, constants: &AlgoConstants) -> f32 {
+    let dir = constants.dir;
+    let padding_border_sum = (item.padding + item.border).main_axis_sum(dir);
+    (item.flex_basis.maybe_min(item.max_size.main(dir)).maybe_max(item.min_size.main(dir))
+        + item.margin.main_axis_sum(dir))
+    .max(padding_border_sum)
 }
 
 /// The outer length of `item` at its hypothetical main size, as a line holds it.
