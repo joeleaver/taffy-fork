@@ -1149,15 +1149,24 @@ fn perform_final_layout_on_in_flow_children(
                     container_percentage_resolution_height,
                     item_non_auto_margin.vertical_axis_sum(),
                 );
-                let item_layout = tree.perform_child_layout(
+                // In the container's own run mode: a container asked only its size must not lay
+                // its floats out, or it overwrites their descendants' layouts with ones made for
+                // the room of that question (a min-content width), which a later final layout
+                // answered from the float's cache never writes back.
+                let item_layout = tree.compute_child_layout(
                     item.node_id,
-                    Size { width: item_known_width, height: item_known_height },
-                    parent_size,
-                    Size { width: item_available_width, height: AvailableSpace::MaxContent },
-                    SizingMode::InherentSize,
-                    // A float establishes a new block formatting context: its margins do not
-                    // collapse with the margins of its children
-                    Line::FALSE,
+                    LayoutInput {
+                        known_dimensions: Size { width: item_known_width, height: item_known_height },
+                        known_dimensions_are_definite: Size { width: true, height: true },
+                        parent_size,
+                        available_space: Size { width: item_available_width, height: AvailableSpace::MaxContent },
+                        sizing_mode: SizingMode::InherentSize,
+                        axis: RequestedAxis::Both,
+                        run_mode,
+                        // A float establishes a new block formatting context: its margins do not
+                        // collapse with the margins of its children
+                        vertical_margins_are_collapsible: Line::FALSE,
+                    },
                 );
                 let margin_box = item_layout.size + item_non_auto_margin.sum_axes();
 
