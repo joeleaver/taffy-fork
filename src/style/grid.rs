@@ -255,6 +255,12 @@ pub trait GridContainerStyle: CoreStyle {
     fn proportional_column_sizing(&self) -> bool {
         Style::<Self::CustomIdent>::DEFAULT.proportional_column_sizing
     }
+    /// Whether an unresolvable percentage width makes the max-content width fill
+    /// ([`crate::Style::fill_max_content`])
+    #[inline(always)]
+    fn fill_max_content(&self) -> bool {
+        Style::<Self::CustomIdent>::DEFAULT.fill_max_content
+    }
 
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
