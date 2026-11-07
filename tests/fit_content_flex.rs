@@ -306,3 +306,14 @@ fn a_float_column_taller_than_its_parent() {
     let container = Style { flex_direction: FlexDirection::Column, ..floated(row()) };
     assert_eq!(layout(Case { parent, container, items: items(2) }).1, 80.0);
 }
+
+/// The container's padding comes on top of its min-content size too: two
+/// items' 200 and 70 of padding pass the room, 270.
+#[test]
+fn padding_on_top_of_the_min_content() {
+    let container = Style {
+        padding: Rect { left: length(35.0), right: length(35.0), top: zero(), bottom: zero() },
+        ..floated(row())
+    };
+    assert_eq!(layout(Case { parent: block(), container, items: items(2) }).0, 270.0);
+}
