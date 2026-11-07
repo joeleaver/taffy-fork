@@ -514,10 +514,19 @@ impl FloatContext {
         }
 
         let end_idx = match end {
+            // The float reaches below every segment there is: the part of it below them is a
+            // new segment of its own, so that its whole height narrows what comes after it
+            // (rinch #2362: a left float 100x50 beside one 100x30 lost its last 20px, and a
+            // later float or line saw the full width there).
             None => {
                 let last_y_end = self.segments.last().map(|seg| seg.y.end).unwrap_or(0.0);
-                if min_y > last_y_end {
-                    self.segments.push(Segment { y: last_y_end..min_y, insets: [0.0, 0.0], has_float: [false; 2] });
+                let end_y = start_y + floated_box.height;
+                if end_y > last_y_end {
+                    self.segments.push(Segment {
+                        y: last_y_end..end_y,
+                        insets: containing_block_insets,
+                        has_float: [false; 2],
+                    });
                 }
                 self.segments.len() - 1
             }

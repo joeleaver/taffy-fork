@@ -149,3 +149,40 @@ fn float_beside_existing_float_moves_down_instead_of_overflowing() {
     assert_eq!(taffy.layout(right).unwrap().location, Point { x: 40.0, y: 50.0 });
     assert_eq!(taffy.layout(left2).unwrap().location, Point { x: 0.0, y: 100.0 });
 }
+
+/// rinch #2362: a float that reaches below every segment there is keeps its
+/// whole height in the segments. Left floats 100x30 and 100x50: the second
+/// stands beside the first and reaches 20px below it, and that tail was in no
+/// segment, so a third float, and any line, saw the full width there. Chrome
+/// 156: a third left float 120x10 goes below the second, to (0, 50), not
+/// into the 100px gap left of it at y 30; a right float 120x10 goes to
+/// (180, 50).
+#[test]
+fn float_reaching_below_every_segment_keeps_its_tail() {
+    for (side, x) in [(Float::Left, 0.0), (Float::Right, 180.0)] {
+        let mut taffy = new_test_tree();
+        let a = taffy.new_leaf(float_block(100.0, 30.0, Float::Left)).unwrap();
+        let b = taffy.new_leaf(float_block(100.0, 50.0, Float::Left)).unwrap();
+        let c = taffy.new_leaf(float_block(120.0, 10.0, side)).unwrap();
+        let root = taffy.new_with_children(root_style(300.0), &[a, b, c]).unwrap();
+        taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        assert_eq!(taffy.layout(b).unwrap().location, Point { x: 100.0, y: 0.0 });
+        assert_eq!(taffy.layout(c).unwrap().location, Point { x, y: 50.0 }, "{side:?}");
+    }
+}
+
+/// The same off the round numbers, three floats deep: 150x23, then 60x47
+/// beside it, then 40x61 beside both. A fourth left float 100x10 fits
+/// beside none of them until the last ends: Chrome puts it at (0, 61).
+#[test]
+fn floats_reaching_below_each_other_keep_their_tails() {
+    let mut taffy = new_test_tree();
+    let a = taffy.new_leaf(float_block(150.0, 23.0, Float::Left)).unwrap();
+    let b = taffy.new_leaf(float_block(60.0, 47.0, Float::Left)).unwrap();
+    let c = taffy.new_leaf(float_block(40.0, 61.0, Float::Left)).unwrap();
+    let d = taffy.new_leaf(float_block(100.0, 10.0, Float::Left)).unwrap();
+    let root = taffy.new_with_children(root_style(300.0), &[a, b, c, d]).unwrap();
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+    assert_eq!(taffy.layout(c).unwrap().location, Point { x: 210.0, y: 0.0 });
+    assert_eq!(taffy.layout(d).unwrap().location, Point { x: 0.0, y: 61.0 });
+}
