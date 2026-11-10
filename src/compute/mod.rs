@@ -210,7 +210,8 @@ where
 ///
 /// In order to ensure that no gaps in the layout are introduced we:
 ///   - Always round based on the cumulative x/y coordinates (relative to the viewport) rather than
-///     parent-relative coordinates
+///     parent-relative coordinates, the location included (`round(abs) - round(parent abs)`), so a
+///     box's rounded absolute position is `round` of its exact one at any depth
 ///   - Compute width/height by first rounding the top/bottom/left/right and then computing the difference
 ///     rather than rounding the width/height directly
 ///
@@ -226,11 +227,17 @@ pub fn round_layout(tree: &mut impl RoundTree, node_id: NodeId) {
         let unrounded_layout = tree.get_unrounded_layout(node_id);
         let mut layout = unrounded_layout;
 
+        let (parent_x, parent_y) = (cumulative_x, cumulative_y);
         let cumulative_x = cumulative_x + unrounded_layout.location.x;
         let cumulative_y = cumulative_y + unrounded_layout.location.y;
 
-        layout.location.x = round(unrounded_layout.location.x);
-        layout.location.y = round(unrounded_layout.location.y);
+        // The location rounds as an absolute edge too: the rounded absolute
+        // position minus the parent's. Rounding the parent-relative offset on
+        // its own lets the error grow by up to half a pixel per level (ten
+        // levels of 13.774px insets land at 140, not round(137.74) = 138,
+        // and the box's right edge two pixels past its parent's; rinch #2437).
+        layout.location.x = round(cumulative_x) - round(parent_x);
+        layout.location.y = round(cumulative_y) - round(parent_y);
         layout.size.width = round(cumulative_x + unrounded_layout.size.width) - round(cumulative_x);
         layout.size.height = round(cumulative_y + unrounded_layout.size.height) - round(cumulative_y);
         layout.scrollbar_size.width = round(unrounded_layout.scrollbar_size.width);
