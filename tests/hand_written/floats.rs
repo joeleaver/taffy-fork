@@ -186,3 +186,103 @@ fn floats_reaching_below_each_other_keep_their_tails() {
     assert_eq!(taffy.layout(c).unwrap().location, Point { x: 210.0, y: 0.0 });
     assert_eq!(taffy.layout(d).unwrap().location, Point { x: 0.0, y: 61.0 });
 }
+
+/// rinch #2397: a box that establishes a formatting context and sizes itself
+/// (a sizing keyword width, or a table: `item_is_table`) sits beside a float
+/// only if the width it takes there fits, and otherwise moves below it. The
+/// fit test took the width an auto width stretches to, which always fits, so
+/// an auto table (rinch's `width: fit-content` grid) holding a 40px box sat
+/// beside a 280px float in 300px, overflowing by 20. Chrome 156: (0, 50); and
+/// beside a 237px float, where 63px is room enough, (237, 0); at exactly 40px
+/// of room (a 260px float), beside it.
+#[test]
+fn self_sized_formatting_context_root_moves_below_a_float_it_does_not_fit_beside() {
+    for (float_width, width, item_is_table, expected) in [
+        (280.0, Dimension::fit_content(), false, Point { x: 0.0, y: 50.0 }),
+        (237.0, Dimension::fit_content(), false, Point { x: 237.0, y: 0.0 }),
+        (260.0, Dimension::fit_content(), false, Point { x: 260.0, y: 0.0 }),
+        (261.0, Dimension::fit_content(), false, Point { x: 0.0, y: 50.0 }),
+        (280.0, Dimension::max_content(), false, Point { x: 0.0, y: 50.0 }),
+        (280.0, Dimension::auto(), true, Point { x: 0.0, y: 50.0 }),
+        (237.0, Dimension::auto(), true, Point { x: 237.0, y: 0.0 }),
+    ] {
+        let mut taffy = new_test_tree();
+        let float = taffy.new_leaf(float_block(float_width, 50.0, Float::Left)).unwrap();
+        let content = taffy
+            .new_leaf(Style { size: Size { width: length(40.0), height: length(10.0) }, ..Default::default() })
+            .unwrap();
+        let subject = taffy
+            .new_with_children(
+                Style {
+                    display: Display::Grid,
+                    size: Size { width, height: auto() },
+                    item_is_table,
+                    ..Default::default()
+                },
+                &[content],
+            )
+            .unwrap();
+        let root = taffy.new_with_children(root_style(300.0), &[float, subject]).unwrap();
+        taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+        let layout = taffy.layout(subject).unwrap();
+        assert_eq!(
+            (layout.location, layout.size.width),
+            (expected, 40.0),
+            "float {float_width}, width {width:?}, item_is_table {item_is_table}"
+        );
+    }
+}
+
+/// The control: an auto-width formatting-context root that is stretched (a
+/// grid with no width) still takes the room beside the float, however narrow,
+/// as Chrome lays out an `overflow: hidden` or `display: flex` block there.
+#[test]
+fn stretched_formatting_context_root_stays_beside_a_float() {
+    let mut taffy = new_test_tree();
+    let float = taffy.new_leaf(float_block(280.0, 50.0, Float::Left)).unwrap();
+    let content = taffy
+        .new_leaf(Style { size: Size { width: length(40.0), height: length(10.0) }, ..Default::default() })
+        .unwrap();
+    let subject = taffy.new_with_children(Style { display: Display::Grid, ..Default::default() }, &[content]).unwrap();
+    let root = taffy.new_with_children(root_style(300.0), &[float, subject]).unwrap();
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+    let layout = taffy.layout(subject).unwrap();
+    assert_eq!((layout.location, layout.size.width), (Point { x: 280.0, y: 0.0 }, 20.0));
+}
+
+/// rinch #2415 review: the table rinch hands block layout is an `item_is_table`
+/// grid with a *declared* width (and `table_rows`, as rinch builds a table),
+/// which it widens past to its tracks' minimum.
+/// A `width: 50px` table holding a 100px box is 100 wide, so beside a 250px
+/// float in 300px it does not fit and moves below (Chrome 156: (0, 50), 100
+/// wide). Fitting it by its declaration (50 <= 50) put it beside, overflowing.
+#[test]
+fn table_with_a_declared_width_fits_by_the_width_it_widens_to() {
+    let mut taffy = new_test_tree();
+    let float = taffy.new_leaf(float_block(250.0, 50.0, Float::Left)).unwrap();
+    let content = taffy
+        .new_leaf(Style { size: Size { width: length(100.0), height: length(10.0) }, ..Default::default() })
+        .unwrap();
+    let table = taffy
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                size: Size { width: length(50.0), height: auto() },
+                item_is_table: true,
+                proportional_column_sizing: true,
+                // rinch's auto column in a table with a width, and its one body row
+                grid_template_columns: vec![minmax(min_content(), auto())],
+                table_rows: Some(taffy::TableRows {
+                    rows: vec![taffy::TableRow { caption: false, section: 0, body: true }],
+                    sized: true,
+                }),
+                ..Default::default()
+            },
+            &[content],
+        )
+        .unwrap();
+    let root = taffy.new_with_children(root_style(300.0), &[float, table]).unwrap();
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+    let layout = taffy.layout(table).unwrap();
+    assert_eq!((layout.location, layout.size.width), (Point { x: 0.0, y: 50.0 }, 100.0));
+}

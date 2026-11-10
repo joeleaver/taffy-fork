@@ -1427,11 +1427,43 @@ fn perform_final_layout_on_in_flow_children(
                         let slot = loop {
                             let slot = block_ctx.find_bfc_slot(min_y, x_margins, direction, item.clear, slot_segment);
                             let Some(segment_id) = slot.segment_id else { break slot };
-                            let width = item
-                                .size
-                                .width
-                                .unwrap_or(slot.stretch_width.max(min_auto_width))
-                                .maybe_clamp(item.min_size.width, item.max_size.width);
+                            let stretch_width = slot.stretch_width.max(min_auto_width);
+                            // The border box width the item will have in this slot, found as it
+                            // is laid out below. A table or a replaced element sizes itself in the
+                            // slot, declared width or not (a table to at least its min-content
+                            // width: rinch's `item_is_table` table has a declared width it widens
+                            // past, a `width: 50px` table holding a 100px box is 100), and so does a box
+                            // with a sizing keyword width (an auto table's is `fit-content`, from
+                            // rinch): either fits only if that size does. CSS 2.2 §9.5: the border
+                            // box must not overlap a float, so a table wider than the room beside
+                            // the floats moves down, as in Chrome.
+                            let mut measure = |available: AvailableSpace| {
+                                tree.measure_child_size(
+                                    item.node_id,
+                                    Size::NONE,
+                                    parent_size,
+                                    Size { width: available, height: AvailableSpace::MaxContent },
+                                    SizingMode::InherentSize,
+                                    crate::AbsoluteAxis::Horizontal,
+                                    Line::FALSE,
+                                )
+                            };
+                            let width = match item.size.width {
+                                _ if item.is_table || item.is_replaced => {
+                                    measure(AvailableSpace::Definite(stretch_width))
+                                }
+                                Some(width) => width,
+                                None => match resolve_sizing_keyword(
+                                    item.size_style.width,
+                                    Some(stretch_width),
+                                    Some(container_inner_width),
+                                ) {
+                                    Some(SizingKeywordResolution::Exact(width)) => width,
+                                    Some(SizingKeywordResolution::Measure(available)) => measure(available),
+                                    None => stretch_width,
+                                },
+                            }
+                            .maybe_clamp(item.min_size.width, item.max_size.width);
                             if width <= slot.border_width + 0.001 {
                                 break slot;
                             }
