@@ -1,6 +1,6 @@
 //! Computes the CSS block layout algorithm in the case that the block container being laid out contains only block-level boxes
 use crate::geometry::{Line, Point, Rect, Size};
-use crate::style::{AvailableSpace, CoreStyle, LengthPercentageAuto, Overflow, Position};
+use crate::style::{AvailableSpace, CompactLength, CoreStyle, LengthPercentageAuto, Overflow, Position};
 use crate::style_helpers::TaffyMaxContent;
 use crate::tree::{Baselines, CollapsibleMarginSet, Layout, LayoutInput, LayoutOutput, RunMode, SizingMode};
 use crate::tree::{LayoutPartialTreeExt, NodeId};
@@ -375,6 +375,11 @@ struct BlockItem {
     /// rather than being stretch-sized
     /// <https://www.w3.org/TR/CSS22/visudet.html#block-replaced-width>
     is_replaced: bool,
+
+    /// RINCH: a replaced element whose `width` or `max-width` is a percentage: compressible
+    /// (css-sizing-3 §5.2.2), so its min-content contribution is computed with those
+    /// percentages resolved against zero, a length `width` included. The measure answers it.
+    is_compressible: bool,
 
     /// Whether the child is a non-independent block or inline node
     is_in_same_bfc: bool,
@@ -929,6 +934,9 @@ fn generate_item_list(
             let is_block = child_style.is_block();
             let is_table = child_style.is_table();
             let is_replaced = child_style.is_compressible_replaced();
+            let percent = |raw: CompactLength| raw.tag() == CompactLength::PERCENT_TAG;
+            let is_compressible = is_replaced
+                && (percent(child_style.size().width.into_raw()) || percent(child_style.max_size().width.into_raw()));
             let is_scroll_container = overflow.x.is_scroll_container() || overflow.y.is_scroll_container();
             let contain = child_style.contain();
 
@@ -945,6 +953,7 @@ fn generate_item_list(
                 is_table,
                 resolves_own_height: child_style.resolves_own_height(),
                 is_replaced,
+                is_compressible,
                 is_in_same_bfc,
                 #[cfg(feature = "float_layout")]
                 float,
@@ -1029,6 +1038,14 @@ fn determine_content_based_container_width(
     let mut leaf_floats: Vec<PendingFloat> = Vec::new();
     for (index, item) in items.iter().enumerate().filter(|(_, item)| item.position != Position::Absolute) {
         let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
+        // RINCH: a compressible replaced item's length `width` does not hold at min-content: its
+        // measure gives its contribution (rinch: Postrinch mail 033, a `width: 800px;
+        // max-width: 100%` picture that widened a `max-width: 640px` table to 872).
+        let known_dimensions = if item.is_compressible && available_width == AvailableSpace::MinContent {
+            Size { width: None, height: known_dimensions.height }
+        } else {
+            known_dimensions
+        };
 
         let item_x_margin_sum = item
             .margin
