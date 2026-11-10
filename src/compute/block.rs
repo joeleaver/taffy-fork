@@ -1038,10 +1038,12 @@ fn determine_content_based_container_width(
     let mut leaf_floats: Vec<PendingFloat> = Vec::new();
     for (index, item) in items.iter().enumerate().filter(|(_, item)| item.position != Position::Absolute) {
         let known_dimensions = item.size.maybe_clamp(item.min_size, item.max_size);
-        // RINCH: a compressible replaced item's length `width` does not hold at min-content: its
-        // measure gives its contribution (rinch: Postrinch mail 033, a `width: 800px;
-        // max-width: 100%` picture that widened a `max-width: 640px` table to 872).
-        let known_dimensions = if item.is_compressible && available_width == AvailableSpace::MinContent {
+        // RINCH: a compressible replaced item's length `width` does not hold at min-content, or
+        // in definite room (its shrink-to-fit contribution, `min(max-content, max(min-content,
+        // room))`): its measure gives its contribution (rinch: Postrinch mail 033, a `width: 800px;
+        // max-width: 100%` picture that widened a `max-width: 640px` table to 872; rinch #2424, a
+        // float holding one in 300px that was 800 wide).
+        let known_dimensions = if item.is_compressible && available_width != AvailableSpace::MaxContent {
             Size { width: None, height: known_dimensions.height }
         } else {
             known_dimensions

@@ -485,6 +485,33 @@ impl GridItem {
         .sum_axes()
     }
 
+    /// RINCH: the min-content contribution of a compressible replaced item in the inline axis (a
+    /// replaced element whose `width` or `max-width` is a percentage), or `None` for any other item
+    /// or axis. It is computed with its percentages resolved against zero (css-sizing-3 §5.2.2):
+    /// its length `min-width`, or nothing, floored by its padding and border, its length `width`
+    /// giving way (rinch #2431, a `width: 800px; max-width: 100%` picture that gave a
+    /// `min-content` track 800).
+    fn compressed_min_content_contribution(
+        &self,
+        axis: AbstractAxis,
+        tree: &mut impl LayoutPartialTree,
+        grid_area_size: Size<Option<f32>>,
+    ) -> Option<f32> {
+        let percent = |raw: crate::CompactLength| raw.tag() == crate::CompactLength::PERCENT_TAG;
+        if axis != AbstractAxis::Inline
+            || !self.is_compressible_replaced
+            || !(percent(self.size.width.into_raw()) || percent(self.max_size.width.into_raw()))
+        {
+            return None;
+        }
+        let padding = self.padding.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let border = self.border.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
+        let padding_border = padding.horizontal_axis_sum() + border.horizontal_axis_sum();
+        let adjustment = if self.box_sizing == BoxSizing::ContentBox { padding_border } else { 0.0 };
+        let min = self.min_size.width.maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis));
+        Some(min.map_or(0.0, |min| min + adjustment).max(padding_border))
+    }
+
     /// Compute the item's min content contribution from the provided parameters
     pub fn min_content_contribution(
         &self,
@@ -493,6 +520,9 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         available_space: Size<Option<f32>>,
     ) -> f32 {
+        if let Some(contribution) = self.compressed_min_content_contribution(axis, tree, grid_area_size) {
+            return contribution;
+        }
         let known_dimensions = self.known_dimensions(tree, grid_area_size);
         // The child sees the grid area as its containing block during intrinsic measurement, so
         // percentage box properties resolve against the grid area when that size is definite.
@@ -624,6 +654,11 @@ impl GridItem {
         grid_area_size: Size<Option<f32>>,
         inner_node_size: Size<Option<f32>>,
     ) -> f32 {
+        // RINCH: a compressible replaced item's preferred length is not its minimum contribution:
+        // its min-content contribution is (rinch #2431).
+        if let Some(contribution) = self.compressed_min_content_contribution(axis, tree, grid_area_size) {
+            return contribution;
+        }
         let padding = self.padding.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
         let border = self.border.resolve_or_zero(grid_area_size.width, |val, basis| tree.calc(val, basis));
         let padding_border_size = (padding + border).sum_axes();

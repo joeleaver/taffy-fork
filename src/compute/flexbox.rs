@@ -35,6 +35,9 @@ struct FlexItem {
     /// The raw size style of this item. Used to detect and resolve sizing
     /// keywords (`min-content`, `max-content`, `fit-content`, `fit-content(...)`, and `stretch`)
     size_style: Size<Dimension>,
+    /// RINCH: whether the item is a compressible replaced element in the horizontal axis: a
+    /// replaced element whose `width` or `max-width` is a percentage (css-sizing-3 §5.2.2)
+    is_compressible: bool,
     /// The minimum allowable size of this item
     min_size: Size<Option<f32>>,
     /// The maximum allowable size of this item
@@ -683,6 +686,10 @@ fn generate_anonymous_flex_items(
                     .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment),
                 size_style: child_style.size(),
+                is_compressible: child_style.is_compressible_replaced() && {
+                    let percent = |raw: crate::CompactLength| raw.tag() == crate::CompactLength::PERCENT_TAG;
+                    percent(child_style.size().width.into_raw()) || percent(child_style.max_size().width.into_raw())
+                },
                 min_size: child_style
                     .min_size()
                     .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis))
@@ -1490,6 +1497,14 @@ fn item_intrinsic_main_contribution(
     basis_measured_alike: bool,
 ) -> f32 {
     let dir = constants.dir;
+    // RINCH: a compressible replaced item's min-content contribution in a row is computed with its
+    // percentages resolved against zero (css-sizing-3 §5.2.2): its length `min-width`, or nothing,
+    // floored by its padding and border. Its length `width` or flex basis gives way (rinch #2431,
+    // a `width: 800px; max-width: 100%` picture that gave a row 800 at min-content).
+    if constants.is_row && item.is_compressible && available_space.main(dir) == AvailableSpace::MinContent {
+        let padding_border_sum = (item.padding + item.border).main_axis_sum(dir);
+        return item.min_size.main(dir).unwrap_or(0.0).max(padding_border_sum) + item.margin.main_axis_sum(dir);
+    }
     let style_min = item.min_size.main(constants.dir);
     let style_preferred = item.size.main(constants.dir);
     let style_max = item.max_size.main(constants.dir);
