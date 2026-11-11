@@ -36,6 +36,7 @@ where
 
     // Resolve node's preferred/min/max sizes (width/heights) against the available space (percentages resolve to pixel values)
     // For ContentSize mode, we pretend that the node has no size styles as these should be ignored.
+    let mut ratio_height_is_content_floor = false;
     let (node_size, node_min_size, node_max_size, aspect_ratio) = match sizing_mode {
         SizingMode::ContentSize => {
             let node_size = known_dimensions;
@@ -45,15 +46,16 @@ where
         }
         SizingMode::InherentSize => {
             let aspect_ratio = style.aspect_ratio();
+            ratio_height_is_content_floor = style.ratio_height_is_content_floor();
             let style_size = style
                 .size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_except_floor(aspect_ratio, style.ratio_height_is_content_floor())
                 .maybe_add(box_sizing_adjustment);
             let style_min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, &resolve_calc_value)
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_transfer_aspect_ratio(style.size().maybe_resolve(parent_size, &resolve_calc_value), aspect_ratio)
                 .maybe_add(box_sizing_adjustment);
             let style_max_size =
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
@@ -162,9 +164,26 @@ where
         .or(node_size)
         .unwrap_or(measured_size + content_box_inset.sum_axes())
         .maybe_clamp(node_min_size, node_max_size);
+    // RINCH (#1561, #1562): a height neither known nor styled comes through the ratio from the
+    // width, as a floor under the measured content (`ratio_height_is_content_floor`) or outright,
+    // and is then clamped. It used to be a floor taken after the clamp and even over a known
+    // height, so `width: 100px; aspect-ratio: 2; max-height: 30px` stayed 50 tall.
+    let ratio_height = match aspect_ratio {
+        Some(ratio) if known_dimensions.height.is_none() && node_size.height.is_none() => {
+            let width = (clamped_size.width - box_sizing_adjustment.width).max(0.0);
+            Some(width / ratio + box_sizing_adjustment.height)
+        }
+        _ => None,
+    };
     let size = Size {
         width: clamped_size.width,
-        height: f32_max(clamped_size.height, aspect_ratio.map(|ratio| clamped_size.width / ratio).unwrap_or(0.0)),
+        height: match ratio_height {
+            Some(ratio_height) if ratio_height_is_content_floor => {
+                f32_max(clamped_size.height, ratio_height).maybe_clamp(node_min_size.height, node_max_size.height)
+            }
+            Some(ratio_height) => ratio_height.maybe_clamp(node_min_size.height, node_max_size.height),
+            None => clamped_size.height,
+        },
     };
     let size = size.maybe_max(padding_border.sum_axes().map(Some));
 

@@ -32,6 +32,10 @@ struct FlexItem {
 
     /// The base size of this item
     size: Size<Option<f32>>,
+    /// RINCH (#1561): the item's resolved preferred size before the aspect ratio is applied to
+    /// it: a min/max constraint goes through the ratio only into an axis that is `None` here
+    /// ([`Size::maybe_transfer_aspect_ratio`]).
+    preferred_size: Size<Option<f32>>,
     /// The raw size style of this item. Used to detect and resolve sizing
     /// keywords (`min-content`, `max-content`, `fit-content`, `fit-content(...)`, and `stretch`)
     size_style: Size<Dimension>,
@@ -44,6 +48,8 @@ struct FlexItem {
     max_size: Size<Option<f32>>,
     /// The aspect ratio of this item
     aspect_ratio: Option<f32>,
+    /// RINCH (#1562): `CoreStyle::ratio_height_is_content_floor` of this item
+    ratio_height_is_content_floor: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -250,12 +256,18 @@ pub fn compute_flexbox_layout(
     let min_size = style
         .min_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let max_size = style
         .max_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let clamped_style_size = if inputs.sizing_mode == SizingMode::InherentSize {
         style
@@ -613,12 +625,18 @@ fn compute_constants(
         min_size: style
             .min_size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment),
         max_size: style
             .max_size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment),
         margin,
         border,
@@ -680,11 +698,19 @@ fn generate_anonymous_flex_items(
             FlexItem {
                 node: child,
                 order: index as u32,
+                // RINCH (#1562): in a row, a height from the ratio is a floor under the content
+                // (`ratio_height_is_content_floor`), applied with the hypothetical cross size.
                 size: child_style
                     .size()
                     .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                    .maybe_apply_aspect_ratio_except_floor(
+                        aspect_ratio,
+                        constants.is_row && child_style.ratio_height_is_content_floor(),
+                    )
                     .maybe_add(box_sizing_adjustment),
+                preferred_size: child_style
+                    .size()
+                    .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis)),
                 size_style: child_style.size(),
                 is_compressible: child_style.is_compressible_replaced() && {
                     let percent = |raw: crate::CompactLength| raw.tag() == crate::CompactLength::PERCENT_TAG;
@@ -699,6 +725,7 @@ fn generate_anonymous_flex_items(
                     .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis))
                     .maybe_add(box_sizing_adjustment),
                 aspect_ratio,
+                ratio_height_is_content_floor: child_style.ratio_height_is_content_floor(),
 
                 inset: child_style
                     .inset()
@@ -844,8 +871,8 @@ fn determine_flex_base_size(
         // Min/max sizes transferred through the aspect ratio are taken into account here
         // https://github.com/w3c/csswg-drafts/issues/10997
         let cross_axis_margin_sum = constants.margin.cross_axis_sum(dir);
-        let transferred_min_size = child.min_size.maybe_apply_aspect_ratio(child.aspect_ratio);
-        let transferred_max_size = child.max_size.maybe_apply_aspect_ratio(child.aspect_ratio);
+        let transferred_min_size = child.min_size.maybe_transfer_aspect_ratio(child.preferred_size, child.aspect_ratio);
+        let transferred_max_size = child.max_size.maybe_transfer_aspect_ratio(child.preferred_size, child.aspect_ratio);
         let child_min_cross = transferred_min_size.cross(dir).maybe_add(cross_axis_margin_sum);
         let child_max_cross = transferred_max_size.cross(dir).maybe_add(cross_axis_margin_sum);
 
@@ -1074,6 +1101,18 @@ fn determine_flex_base_size(
                     dir.main_axis(),
                     Line::FALSE,
                 )
+            };
+
+            // RINCH (#1562): the min-content main size of a box with a ratio and a definite cross
+            // size is at least that cross size through the ratio (css-sizing-4 §5.1): a
+            // stretched `aspect-ratio: 2` item 300 tall has a min-content width of 600, so it
+            // does not shrink below it (Chrome). A leaf measured in `ContentSize` mode does not
+            // apply the ratio itself.
+            let min_content_main_size = match (child.aspect_ratio, child_known_dimensions.cross(dir)) {
+                (Some(ratio), Some(cross)) if child_cross_size_is_definite => {
+                    min_content_main_size.max(if dir.is_row() { cross * ratio } else { cross / ratio })
+                }
+                _ => min_content_main_size,
             };
 
             // 4.5. Automatic Minimum Size of Flex Items
@@ -1931,8 +1970,10 @@ fn determine_hypothetical_cross_size(
 
         // Sizes transferred through the aspect ratio clamp the hypothetical cross size
         // https://github.com/w3c/csswg-drafts/issues/10997
-        let transferred_min_cross = child.min_size.maybe_apply_aspect_ratio(child.aspect_ratio).cross(constants.dir);
-        let transferred_max_cross = child.max_size.maybe_apply_aspect_ratio(child.aspect_ratio).cross(constants.dir);
+        let transferred_min_cross =
+            child.min_size.maybe_transfer_aspect_ratio(child.preferred_size, child.aspect_ratio).cross(constants.dir);
+        let transferred_max_cross =
+            child.max_size.maybe_transfer_aspect_ratio(child.preferred_size, child.aspect_ratio).cross(constants.dir);
 
         let child_cross = child
             .size
@@ -1967,29 +2008,46 @@ fn determine_hypothetical_cross_size(
         };
 
         let child_inner_cross = child_cross.unwrap_or_else(|| {
-            tree.compute_child_layout(
-                child.node,
-                LayoutInput {
-                    run_mode: RunMode::ComputeSize,
-                    sizing_mode: SizingMode::ContentSize,
-                    axis: constants.dir.cross_axis().into(),
-                    known_dimensions: Size {
-                        width: if constants.is_row { child.target_size.width.into() } else { child_cross },
-                        height: if constants.is_row { child_cross } else { child.target_size.height.into() },
+            let measured = tree
+                .compute_child_layout(
+                    child.node,
+                    LayoutInput {
+                        run_mode: RunMode::ComputeSize,
+                        sizing_mode: SizingMode::ContentSize,
+                        axis: constants.dir.cross_axis().into(),
+                        known_dimensions: Size {
+                            width: if constants.is_row { child.target_size.width.into() } else { child_cross },
+                            height: if constants.is_row { child_cross } else { child.target_size.height.into() },
+                        },
+                        known_dimensions_are_definite: item_known_dimension_definiteness(constants, child),
+                        parent_size: constants.node_inner_size,
+                        available_space: Size {
+                            width: if constants.is_row { child_known_main } else { child_available_cross },
+                            height: if constants.is_row { child_available_cross } else { child_known_main },
+                        },
+                        vertical_margins_are_collapsible: Line::FALSE,
                     },
-                    known_dimensions_are_definite: item_known_dimension_definiteness(constants, child),
-                    parent_size: constants.node_inner_size,
-                    available_space: Size {
-                        width: if constants.is_row { child_known_main } else { child_available_cross },
-                        height: if constants.is_row { child_available_cross } else { child_known_main },
-                    },
-                    vertical_margins_are_collapsible: Line::FALSE,
-                },
-            )
-            .size
-            .get_abs(constants.dir.cross_axis())
-            .maybe_clamp(transferred_min_cross, transferred_max_cross)
-            .max(padding_border_sum)
+                )
+                .size
+                .get_abs(constants.dir.cross_axis());
+            // RINCH (#1571): a cross size with no size of its own comes through the ratio from
+            // the main size after flexing (css-flexbox-1 §9.4 step 7 lays the item out with
+            // its used main size), outright or, for a height, as a floor under the content's
+            // height. A leaf measured in `ContentSize` mode does not apply the ratio itself, so
+            // `flex: 1; aspect-ratio: 4` grown from a 0 basis was 0 tall.
+            let measured = match child.aspect_ratio {
+                Some(ratio) => {
+                    let main = child.target_size.main(constants.dir);
+                    let ratio_cross = if constants.is_row { main / ratio } else { main * ratio };
+                    if constants.is_row && child.ratio_height_is_content_floor {
+                        measured.max(ratio_cross)
+                    } else {
+                        ratio_cross
+                    }
+                }
+                None => measured,
+            };
+            measured.maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum)
         });
         let child_outer_cross = child_inner_cross + child.margin.cross_axis_sum(constants.dir);
 
@@ -2848,14 +2906,20 @@ fn perform_absolute_layout_on_absolute_children(
         let min_size = child_style
             .min_size()
             .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                child_style.size().maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment)
             .or(padding_border_sum.map(Some))
             .maybe_max(padding_border_sum);
         let max_size = child_style
             .max_size()
             .maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                child_style.size().maybe_resolve(inset_relative_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment);
         let mut known_dimensions = style_size.maybe_clamp(min_size, max_size);
         let resolves_own_height = child_style.resolves_own_height();

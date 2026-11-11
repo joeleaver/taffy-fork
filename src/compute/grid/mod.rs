@@ -73,12 +73,18 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let min_size = style
         .min_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let max_size = style
         .max_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let mut preferred_size = if inputs.sizing_mode == SizingMode::InherentSize {
         style

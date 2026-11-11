@@ -86,17 +86,23 @@ pub fn compute_root_layout(tree: &mut impl LayoutPartialTree, root: NodeId, avai
             let min_size = style
                 .min_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_transfer_aspect_ratio(
+                    style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+                    aspect_ratio,
+                )
                 .maybe_add(box_sizing_adjustment);
             let max_size = style
                 .max_size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_transfer_aspect_ratio(
+                    style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+                    aspect_ratio,
+                )
                 .maybe_add(box_sizing_adjustment);
             let clamped_style_size = style
                 .size()
                 .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-                .maybe_apply_aspect_ratio(aspect_ratio)
+                .maybe_apply_aspect_ratio_except_floor(aspect_ratio, style.ratio_height_is_content_floor())
                 .maybe_add(box_sizing_adjustment)
                 .maybe_clamp(min_size, max_size);
 

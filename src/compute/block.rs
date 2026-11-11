@@ -468,18 +468,24 @@ pub fn compute_block_layout(
     let min_size = style
         .min_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let max_size = style
         .max_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let clamped_style_size = if inputs.sizing_mode == SizingMode::InherentSize {
         style
             .size()
             .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_except_floor(aspect_ratio, style.ratio_height_is_content_floor())
             .maybe_add(box_sizing_adjustment)
             .maybe_clamp(min_size, max_size)
     } else {
@@ -592,12 +598,18 @@ fn compute_inner(
     let min_size = style
         .min_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
     let max_size = style
         .max_size()
         .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
 
     // css-sizing-4: a definite size in one axis transfers through `aspect-ratio`
@@ -607,13 +619,32 @@ fn compute_inner(
     // while probing intrinsic sizes, so measure passes stay content-based. Only a
     // newly-filled axis is adopted (and clamped); an incoming known size is left
     // as the parent resolved it (re-clamping would undo padding/border overrides).
+    //
+    // RINCH (#1562): a height that is only a floor under the content
+    // (`ratio_height_is_content_floor`) is not adopted here; it is applied below, once the
+    // content height is known.
+    let ratio_height_is_content_floor = style.ratio_height_is_content_floor();
     let known_dimensions = {
-        let derived = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+        let derived = known_dimensions
+            .maybe_apply_aspect_ratio_except_floor(aspect_ratio, ratio_height_is_content_floor)
+            .maybe_clamp(min_size, max_size);
         Size { width: known_dimensions.width.or(derived.width), height: known_dimensions.height.or(derived.height) }
+    };
+    // The floor from a known width is still the height children's percentages resolve against:
+    // css-sizing-4 §5.1 treats the ratio-dependent size as definite.
+    let floor_from_known_width = match (known_dimensions, aspect_ratio) {
+        (Size { width: Some(width), height: None }, Some(ratio)) if ratio_height_is_content_floor => {
+            Some((width - box_sizing_adjustment.width).max(0.0) / ratio + box_sizing_adjustment.height)
+                .maybe_clamp(min_size.height, max_size.height)
+        }
+        _ => None,
     };
     let percentage_basis_dimensions = Size {
         width: known_dimensions.width,
-        height: known_dimensions.height.filter(|_| inputs.known_dimensions_are_definite.height),
+        height: known_dimensions
+            .height
+            .filter(|_| inputs.known_dimensions_are_definite.height)
+            .or(floor_from_known_width),
     };
     let container_content_box_size = percentage_basis_dimensions.maybe_sub(content_box_inset.sum_axes());
 
@@ -662,6 +693,25 @@ fn compute_inner(
             + content_box_inset.horizontal_axis_sum();
         intrinsic_width.maybe_clamp(min_size.width, max_size.width).maybe_max(Some(padding_border_size.width))
     });
+
+    // RINCH (#1570): a height not known by now, on a box with a ratio, comes through the ratio
+    // from the width just resolved, which may have come from the content (an inline-block, an
+    // absolutely positioned or floated box, any shrink-to-fit width); css-sizing-4 §2. It was
+    // derived only from a known width above, so a shrink-to-fit box took its content's height.
+    // The ratio is of the `box-sizing` box. It is the height outright, or (#1562) a floor under
+    // the content's height, applied with the final height below.
+    let ratio_height = match (known_dimensions.height, aspect_ratio) {
+        (None, Some(ratio)) => Some(
+            ((container_outer_width - box_sizing_adjustment.width).max(0.0) / ratio + box_sizing_adjustment.height)
+                .maybe_clamp(min_size.height, max_size.height),
+        ),
+        _ => None,
+    };
+    let known_dimensions = Size {
+        width: known_dimensions.width,
+        height: known_dimensions.height.or(ratio_height.filter(|_| !ratio_height_is_content_floor)),
+    };
+    let ratio_height_floor = ratio_height.filter(|_| ratio_height_is_content_floor);
 
     // Short-circuit if computing size and both dimensions known
     if let (RunMode::ComputeSize, Some(container_outer_height)) = (run_mode, known_dimensions.height) {
@@ -737,7 +787,7 @@ fn compute_inner(
 
     let container_outer_height = known_dimensions
         .height
-        .unwrap_or(intrinsic_outer_height.maybe_clamp(min_size.height, max_size.height))
+        .unwrap_or(intrinsic_outer_height.maybe_max(ratio_height_floor).maybe_clamp(min_size.height, max_size.height))
         .maybe_max(Some(padding_border_size.height));
     let final_outer_size = Size { width: container_outer_width, height: container_outer_height };
 
@@ -963,17 +1013,23 @@ fn generate_item_list(
                 size: child_style
                     .size()
                     .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                    .maybe_apply_aspect_ratio_except_floor(aspect_ratio, child_style.ratio_height_is_content_floor())
                     .maybe_add(box_sizing_adjustment),
                 min_size: child_style
                     .min_size()
                     .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                    .maybe_transfer_aspect_ratio(
+                        child_style.size().maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis)),
+                        aspect_ratio,
+                    )
                     .maybe_add(box_sizing_adjustment),
                 max_size: child_style
                     .max_size()
                     .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio(aspect_ratio)
+                    .maybe_transfer_aspect_ratio(
+                        child_style.size().maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis)),
+                        aspect_ratio,
+                    )
                     .maybe_add(box_sizing_adjustment),
                 overflow,
                 contain,
@@ -1973,6 +2029,7 @@ fn perform_absolute_layout_on_absolute_children(
         }
 
         let aspect_ratio = child_style.aspect_ratio();
+        let ratio_height_is_content_floor = child_style.ratio_height_is_content_floor();
         let margin =
             child_style.margin().map(|margin| margin.resolve_to_option(area_width, |val, basis| tree.calc(val, basis)));
         let padding = child_style.padding().resolve_or_zero(Some(area_width), |val, basis| tree.calc(val, basis));
@@ -1991,19 +2048,25 @@ fn perform_absolute_layout_on_absolute_children(
         let size_style = child_style.size();
         let style_size = size_style
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_apply_aspect_ratio_except_floor(aspect_ratio, ratio_height_is_content_floor)
             .maybe_add(box_sizing_adjustment);
         let min_size = child_style
             .min_size()
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                child_style.size().maybe_resolve(area_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment)
             .or(padding_border_sum.map(Some))
             .maybe_max(padding_border_sum);
         let max_size = child_style
             .max_size()
             .maybe_resolve(area_size, |val, basis| tree.calc(val, basis))
-            .maybe_apply_aspect_ratio(aspect_ratio)
+            .maybe_transfer_aspect_ratio(
+                child_style.size().maybe_resolve(area_size, |val, basis| tree.calc(val, basis)),
+                aspect_ratio,
+            )
             .maybe_add(box_sizing_adjustment);
         let mut known_dimensions = style_size.maybe_clamp(min_size, max_size);
         let resolves_own_height = child_style.resolves_own_height();
@@ -2024,7 +2087,9 @@ fn perform_absolute_layout_on_absolute_children(
                 margin,
                 SizingMode::ContentSize,
             );
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_except_floor(aspect_ratio, ratio_height_is_content_floor)
+                .maybe_clamp(min_size, max_size);
         }
 
         // Fill in width from left/right and reapply aspect ratio if:
@@ -2033,16 +2098,25 @@ fn perform_absolute_layout_on_absolute_children(
         if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
             let new_width_raw = area_width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
             known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_except_floor(aspect_ratio, ratio_height_is_content_floor)
+                .maybe_clamp(min_size, max_size);
         }
 
         // Fill in height from top/bottom and reapply aspect ratio if:
         //   - Height is not already known
         //   - Item has both top and bottom inset properties set
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
+        //   - RINCH (#1562): and the height is not the ratio's from a known width, kept unknown
+        //     as a floor under the content (the ratio wins over the insets)
+        let height_from_ratio_floor =
+            ratio_height_is_content_floor && known_dimensions.width.is_some() && size_style.height.is_auto();
+        if let (None, Some(top), Some(bottom), false) = (known_dimensions.height, top, bottom, height_from_ratio_floor)
+        {
             let new_height_raw = area_height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
-            known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
+            known_dimensions = known_dimensions
+                .maybe_apply_aspect_ratio_except_floor(aspect_ratio, ratio_height_is_content_floor)
+                .maybe_clamp(min_size, max_size);
         }
 
         // RINCH: the room for the box's border box, its horizontal margins out (rinch #2361), as
@@ -2064,7 +2138,25 @@ fn perform_absolute_layout_on_absolute_children(
                     SizingMode::ContentSize,
                     Line::FALSE,
                 );
-                known_dimensions.unwrap_or(measured_size)
+                let size = known_dimensions.unwrap_or(measured_size);
+                // RINCH (#1562, #1570): a height still unknown comes through the ratio from the
+                // width (declared, from the insets or from the content), outright or as a floor
+                // under the content's height. A leaf measured in `ContentSize` mode does not
+                // apply the ratio itself.
+                match (known_dimensions.height, aspect_ratio) {
+                    (None, Some(ratio)) => {
+                        let width = size.width.maybe_clamp(min_size.width, max_size.width);
+                        let ratio_height =
+                            (width - box_sizing_adjustment.width).max(0.0) / ratio + box_sizing_adjustment.height;
+                        let height = if ratio_height_is_content_floor {
+                            f32_max(size.height, ratio_height)
+                        } else {
+                            ratio_height
+                        };
+                        Size { width: size.width, height }
+                    }
+                    _ => size,
+                }
             }
         }
         .maybe_clamp(min_size, max_size);

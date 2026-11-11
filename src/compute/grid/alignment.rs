@@ -155,7 +155,10 @@ pub(super) fn align_and_position_item(
     let max_size = style
         .max_size()
         .maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis))
-        .maybe_apply_aspect_ratio(aspect_ratio)
+        .maybe_transfer_aspect_ratio(
+            style.size().maybe_resolve(grid_area_size, |val, basis| tree.calc(val, basis)),
+            aspect_ratio,
+        )
         .maybe_add(box_sizing_adjustment);
 
     // Resolve default alignment styles if they are set on neither the parent or the node itself

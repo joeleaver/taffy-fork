@@ -165,6 +165,18 @@ pub trait CoreStyle {
     fn aspect_ratio(&self) -> Option<f32> {
         Style::<Self::CustomIdent>::DEFAULT.aspect_ratio
     }
+    /// RINCH (#1562): whether a height this box takes from its aspect ratio is only a floor under
+    /// its content's height. css-sizing-4 §5.1: a box with a preferred aspect ratio has a
+    /// content-based automatic minimum size in the ratio-dependent axis, unless it is a scroll
+    /// container or declares a `min-height` of its own. Not overridden by implementors.
+    #[inline(always)]
+    fn ratio_height_is_content_floor(&self) -> bool {
+        let overflow = self.overflow();
+        self.aspect_ratio().is_some()
+            && self.min_size().height.is_auto()
+            && !overflow.x.is_scroll_container()
+            && !overflow.y.is_scroll_container()
+    }
 
     // Spacing Properties
     /// How large should the margin be on each side?

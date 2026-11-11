@@ -611,6 +611,43 @@ impl Size<Option<f32>> {
             None => self,
         }
     }
+
+    /// RINCH (#1562): [`Self::maybe_apply_aspect_ratio`], except that a height derived from the
+    /// width is left `None` when `height_is_content_floor` (the box's
+    /// `CoreStyle::ratio_height_is_content_floor`): that height is a floor under the box's
+    /// content height, which only the box's own layout knows, so it is not a definite size the
+    /// parent can impose. The box's layout applies the floor once it has the content.
+    pub fn maybe_apply_aspect_ratio_except_floor(
+        self,
+        aspect_ratio: Option<f32>,
+        height_is_content_floor: bool,
+    ) -> Size<Option<f32>> {
+        let applied = self.maybe_apply_aspect_ratio(aspect_ratio);
+        if height_is_content_floor && self.height.is_none() {
+            Size { width: applied.width, height: None }
+        } else {
+            applied
+        }
+    }
+
+    /// RINCH (#1561): transfer a min or max size constraint (`self`) through the aspect ratio
+    /// into the other axis, but only into an axis whose preferred size (`preferred`, resolved,
+    /// before the ratio is applied to it) is `auto`. css-sizing-4 §5.1: a constraint is
+    /// transferred into the ratio-dependent axis; a definite size is never clamped by the other
+    /// axis's constraint, the ratio gives way instead. [`Self::maybe_apply_aspect_ratio`]
+    /// transferred it into a definite axis too, so `width: 100px; aspect-ratio: 2;
+    /// max-height: 30px` was 60x30 (Chrome: 100x30).
+    pub fn maybe_transfer_aspect_ratio(
+        self,
+        preferred: Size<Option<f32>>,
+        aspect_ratio: Option<f32>,
+    ) -> Size<Option<f32>> {
+        let transferred = self.maybe_apply_aspect_ratio(aspect_ratio);
+        Size {
+            width: if preferred.width.is_none() { transferred.width } else { self.width },
+            height: if preferred.height.is_none() { transferred.height } else { self.height },
+        }
+    }
 }
 
 impl<T> Size<Option<T>> {
