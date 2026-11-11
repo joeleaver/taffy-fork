@@ -436,6 +436,70 @@ struct BlockItem {
     /// Pending layout for in-flow non-floated items. Held back from `set_unrounded_layout` so the
     /// post-loop `align-content` pass in `compute_inner` can shift `location.y` before commit.
     final_layout: Option<Layout>,
+
+    /// RINCH: where `justify-self` (or the container's `justify-items`) puts the item in the free
+    /// inline space ([`BlockJustify`]); `None` is `normal` / `stretch` (the item starts, and an
+    /// auto width stretches).
+    justify: Option<BlockJustify>,
+}
+
+/// RINCH: a block-level box's `justify-self` in block layout (css-align-3 §6.1): the part of the
+/// free inline space put before it on the container's inline-start side (`0` start, `0.5`
+/// centre, `1` end) and whether it is `safe` (an item wider than its room then starts). An
+/// auto width is `fit-content` under any of these, not stretched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BlockJustify {
+    /// The part of the free space before the item, from the inline-start edge.
+    fraction: f32,
+    /// `safe`: an item that overflows starts.
+    safe: bool,
+}
+
+impl BlockJustify {
+    /// Resolve a `justify-self` value for an item whose own direction is `item_direction` in a
+    /// container whose direction is `container_direction`. `normal` / `stretch` (and `None`,
+    /// `auto` with no `justify-items`) is `None`; a baseline value has no meaning on a block
+    /// container's inline axis and starts the box, as Chrome does.
+    fn resolve(
+        justify: Option<crate::style::AlignSelf>,
+        item_direction: Direction,
+        container_direction: Direction,
+    ) -> Option<Self> {
+        use crate::style::AlignItemsKeyword as K;
+        let justify = justify?;
+        let same = item_direction == container_direction;
+        let fraction = match justify.keyword {
+            K::Start | K::FlexStart | K::Baseline => 0.0,
+            K::End | K::FlexEnd => 1.0,
+            K::SelfStart => {
+                if same {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            K::SelfEnd => {
+                if same {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            K::Center => 0.5,
+            K::Stretch => return None,
+        };
+        Some(Self { fraction, safe: justify.is_safe() })
+    }
+
+    /// The offset, towards the container's inline end, of an item with `free_space` (negative
+    /// when it overflows) beside it.
+    fn offset(self, free_space: f32) -> f32 {
+        if free_space < 0.0 && self.safe {
+            0.0
+        } else {
+            free_space * self.fraction
+        }
+    }
 }
 
 /// Computes the layout of [`LayoutPartialTree`] according to the block layout algorithm
@@ -965,6 +1029,28 @@ fn compute_inner(
     output
 }
 
+/// RINCH: how far `justify-self` moves an in-flow block-level `item` of border-box `width` with
+/// `stretch_width` of room beside its non-auto margins, as a physical x offset (towards the left
+/// in a right-to-left container). No offset when it has an auto inline margin: auto margins
+/// absorb the free space before alignment does (css-align-3 §6.1).
+fn justify_shift(
+    item: &BlockItem,
+    item_margin: &Rect<Option<f32>>,
+    stretch_width: f32,
+    width: f32,
+    direction: Direction,
+) -> f32 {
+    let Some(justify) = item.justify else { return 0.0 };
+    if item_margin.left.is_none() || item_margin.right.is_none() {
+        return 0.0;
+    }
+    let offset = justify.offset(stretch_width - width);
+    match direction {
+        Direction::Ltr => offset,
+        Direction::Rtl => -offset,
+    }
+}
+
 /// Create a `Vec` of `BlockItem` structs where each item in the `Vec` represents a child of the current node
 #[inline]
 fn generate_item_list(
@@ -972,6 +1058,10 @@ fn generate_item_list(
     node: NodeId,
     node_inner_size: Size<Option<f32>>,
 ) -> Vec<BlockItem> {
+    let (justify_items, container_direction) = {
+        let style = tree.get_block_container_style(node);
+        (style.justify_items(), style.direction())
+    };
     tree.child_ids(node)
         .map(|child_node_id| (child_node_id, tree.get_block_child_style(child_node_id)))
         .filter(|(_, style)| style.box_generation_mode() != BoxGenerationMode::None)
@@ -1011,6 +1101,27 @@ fn generate_item_list(
                 && !is_scroll_container
                 && !contain.establishes_independent_formatting_context();
 
+            // RINCH: `justify-self` (else the container's `justify-items`) on a block-level box.
+            // Floats and absolutely positioned boxes are placed by other rules.
+            let justify = if position == Position::Absolute || !is_not_floated {
+                None
+            } else {
+                BlockJustify::resolve(
+                    child_style.justify_self().or(justify_items),
+                    child_style.direction(),
+                    container_direction,
+                )
+            };
+            // An aligned box's auto width is `fit-content` (css-align-3 §6.1), as a table's is.
+            let size_style = {
+                let size = child_style.size();
+                if justify.is_some() && size.width.is_auto() {
+                    Size { width: Dimension::fit_content(), height: size.height }
+                } else {
+                    size
+                }
+            };
+
             BlockItem {
                 node_id: child_node_id,
                 order: order as u32,
@@ -1023,7 +1134,7 @@ fn generate_item_list(
                 float,
                 #[cfg(feature = "float_layout")]
                 clear: child_style.clear(),
-                size_style: child_style.size(),
+                size_style,
                 size: child_style
                     .size()
                     .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
@@ -1060,6 +1171,7 @@ fn generate_item_list(
                 static_position: Point::zero(),
                 can_be_collapsed_through: false,
                 final_layout: None,
+                justify,
             }
         })
         .collect()
@@ -1655,7 +1767,9 @@ fn perform_final_layout_on_in_flow_children(
                 let width = known_dimensions.width.unwrap_or(stretch_width);
 
                 // TODO: account for auto margins
-                let inset_left = item_non_auto_margin.left + content_box_inset.left;
+                // RINCH: an item moved by `justify-self` lays its floats out where it is.
+                let justify_shift = justify_shift(item, &item_margin, stretch_width, width, direction);
+                let inset_left = item_non_auto_margin.left + content_box_inset.left + justify_shift;
                 let inset_right = container_outer_width - width - inset_left;
                 let insets = [inset_left, inset_right];
 
@@ -1853,9 +1967,14 @@ fn perform_final_layout_on_in_flow_children(
                 }
             };
 
+            // RINCH: `justify-self` / `justify-items` (css-align-3 §6.1) put the box in the
+            // inline space its margins leave it. Auto margins take that space first.
+            let justified = item.justify.is_some();
+            location.x += justify_shift(item, &item_margin, stretch_width, final_size.width, direction);
+
             // Apply alignment
             let item_outer_width = item_layout.size.width + resolved_margin.horizontal_axis_sum();
-            if item_outer_width < container_inner_width {
+            if !justified && item_outer_width < container_inner_width {
                 let free_x_space = container_inner_width - item_outer_width;
                 match (text_align, direction) {
                     (TextAlign::Auto, _) => {

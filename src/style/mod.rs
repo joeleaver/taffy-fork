@@ -1087,6 +1087,14 @@ impl<S: CheapCloneStr> BlockContainerStyle for Style<S> {
     fn align_content(&self) -> Option<AlignContent> {
         self.align_content
     }
+
+    #[inline(always)]
+    fn justify_items(&self) -> Option<AlignItems> {
+        #[cfg(feature = "grid")]
+        return self.justify_items;
+        #[cfg(not(feature = "grid"))]
+        None
+    }
 }
 
 #[cfg(feature = "block_layout")]
@@ -1099,6 +1107,11 @@ impl<T: BlockContainerStyle> BlockContainerStyle for &'_ T {
     #[inline(always)]
     fn align_content(&self) -> Option<AlignContent> {
         (*self).align_content()
+    }
+
+    #[inline(always)]
+    fn justify_items(&self) -> Option<AlignItems> {
+        (*self).justify_items()
     }
 }
 
@@ -1115,6 +1128,14 @@ impl<S: CheapCloneStr> BlockItemStyle for Style<S> {
         return self.table_rows.as_ref().is_some_and(|t| t.sized);
         #[cfg(not(feature = "grid"))]
         false
+    }
+
+    #[inline(always)]
+    fn justify_self(&self) -> Option<AlignSelf> {
+        #[cfg(feature = "grid")]
+        return self.justify_self;
+        #[cfg(not(feature = "grid"))]
+        None
     }
 
     #[cfg(feature = "float_layout")]
@@ -1140,6 +1161,11 @@ impl<T: BlockItemStyle> BlockItemStyle for &'_ T {
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         (*self).resolves_own_height()
+    }
+
+    #[inline(always)]
+    fn justify_self(&self) -> Option<AlignSelf> {
+        (*self).justify_self()
     }
 
     #[cfg(feature = "float_layout")]

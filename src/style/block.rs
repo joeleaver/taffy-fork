@@ -1,5 +1,5 @@
 //! Style types for Block layout
-use crate::style::AlignContent;
+use crate::style::{AlignContent, AlignItems, AlignSelf};
 use crate::{CoreStyle, Style};
 
 /// The set of styles required for a Block layout container
@@ -14,6 +14,13 @@ pub trait BlockContainerStyle: CoreStyle {
     #[inline(always)]
     fn align_content(&self) -> Option<AlignContent> {
         Style::<Self::CustomIdent>::DEFAULT.align_content
+    }
+
+    /// RINCH: `justify-items`: where a block-level child with `justify-self: auto` goes on the
+    /// inline axis (css-align-3 §6.1). `None` is `normal`.
+    #[inline(always)]
+    fn justify_items(&self) -> Option<AlignItems> {
+        None
     }
 }
 
@@ -31,6 +38,13 @@ pub trait BlockItemStyle: CoreStyle {
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         false
+    }
+
+    /// RINCH: `justify-self`: where the item goes on its container's inline axis (css-align-3
+    /// §6.1). `None` is `auto` (the container's `justify-items`).
+    #[inline(always)]
+    fn justify_self(&self) -> Option<AlignSelf> {
+        None
     }
 
     /// Whether the item is a floated
