@@ -23,7 +23,7 @@ pub fn compute_leaf_layout<MeasureFunction>(
 where
     MeasureFunction: FnOnce(Size<Option<f32>>, Size<AvailableSpace>) -> Size<f32>,
 {
-    let LayoutInput { known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
+    let LayoutInput { mut known_dimensions, parent_size, available_space, sizing_mode, run_mode, .. } = inputs;
 
     // Note: both horizontal and vertical percentage padding/borders are resolved against the container's inline size (i.e. width).
     // This is not a bug, but is how CSS is specified (see: https://developer.mozilla.org/en-US/docs/Web/CSS/padding#values)
@@ -60,6 +60,14 @@ where
             let style_max_size =
                 style.max_size().maybe_resolve(parent_size, &resolve_calc_value).maybe_add(box_sizing_adjustment);
 
+            // RINCH (#1562): a known height that is the ratio's from the known width is only a
+            // floor under the content here (see `Size::height_is_ratio_of_width`).
+            if ratio_height_is_content_floor
+                && style_size.height.is_none()
+                && known_dimensions.height_is_ratio_of_width(aspect_ratio, box_sizing_adjustment)
+            {
+                known_dimensions.height = None;
+            }
             let node_size = known_dimensions.or(style_size);
             (node_size, style_min_size, style_max_size, aspect_ratio)
         }

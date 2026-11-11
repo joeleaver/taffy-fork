@@ -481,6 +481,9 @@ pub fn compute_block_layout(
             aspect_ratio,
         )
         .maybe_add(box_sizing_adjustment);
+    let style_ratio_floor = style.ratio_height_is_content_floor();
+    let style_height_is_auto =
+        style.size().height.maybe_resolve(parent_size.height, |val, basis| tree.calc(val, basis)).is_none();
     let clamped_style_size = if inputs.sizing_mode == SizingMode::InherentSize {
         style
             .size()
@@ -500,6 +503,17 @@ pub fn compute_block_layout(
         _ => None,
     });
 
+    // RINCH (#1562): a known height that is the ratio's from the known width is definite, but
+    // only a floor under the content of a box whose ratio height is one: it is laid out (in
+    // `compute_inner`) rather than answered from the known size.
+    let known_dimensions = if style_ratio_floor
+        && style_height_is_auto
+        && known_dimensions.height_is_ratio_of_width(aspect_ratio, box_sizing_adjustment)
+    {
+        Size { width: known_dimensions.width, height: None }
+    } else {
+        known_dimensions
+    };
     let styled_based_known_dimensions =
         known_dimensions.or(min_max_definite_size).or(clamped_style_size).maybe_max(padding_border_size);
 
@@ -1013,7 +1027,7 @@ fn generate_item_list(
                 size: child_style
                     .size()
                     .maybe_resolve(node_inner_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio_except_floor(aspect_ratio, child_style.ratio_height_is_content_floor())
+                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment),
                 min_size: child_style
                     .min_size()

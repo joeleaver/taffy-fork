@@ -698,15 +698,10 @@ fn generate_anonymous_flex_items(
             FlexItem {
                 node: child,
                 order: index as u32,
-                // RINCH (#1562): in a row, a height from the ratio is a floor under the content
-                // (`ratio_height_is_content_floor`), applied with the hypothetical cross size.
                 size: child_style
                     .size()
                     .maybe_resolve(percent_resolution_size, |val, basis| tree.calc(val, basis))
-                    .maybe_apply_aspect_ratio_except_floor(
-                        aspect_ratio,
-                        constants.is_row && child_style.ratio_height_is_content_floor(),
-                    )
+                    .maybe_apply_aspect_ratio(aspect_ratio)
                     .maybe_add(box_sizing_adjustment),
                 preferred_size: child_style
                     .size()
@@ -2007,6 +2002,13 @@ fn determine_hypothetical_cross_size(
             _ => child_available_cross,
         };
 
+        // RINCH (#1562): in a row, a height the item has only from its ratio is a floor under its
+        // content (`ratio_height_is_content_floor`): it is measured, and floored below.
+        let ratio_cross_is_floor = constants.is_row
+            && child.ratio_height_is_content_floor
+            && child.aspect_ratio.is_some()
+            && child.preferred_size.height.is_none();
+        let child_cross = if ratio_cross_is_floor { None } else { child_cross };
         let child_inner_cross = child_cross.unwrap_or_else(|| {
             let measured = tree
                 .compute_child_layout(

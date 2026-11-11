@@ -630,6 +630,22 @@ impl Size<Option<f32>> {
         }
     }
 
+    /// RINCH (#1562): whether a known height is the one the aspect ratio gives the known width
+    /// (of the `box-sizing` box: `box_sizing_adjustment` is the padding and border a
+    /// `content-box` size leaves out). A parent hands a box with a ratio that height as a definite
+    /// size, which it is (percentages resolve against it); a box whose ratio height is a floor
+    /// under its content (`CoreStyle::ratio_height_is_content_floor`) still grows past it.
+    pub fn height_is_ratio_of_width(self, aspect_ratio: Option<f32>, box_sizing_adjustment: Size<f32>) -> bool {
+        match (self.width, self.height, aspect_ratio) {
+            (Some(width), Some(height), Some(ratio)) => {
+                let ratio_height =
+                    (width - box_sizing_adjustment.width).max(0.0) / ratio + box_sizing_adjustment.height;
+                (height - ratio_height).abs() < 0.01
+            }
+            _ => false,
+        }
+    }
+
     /// RINCH (#1561): transfer a min or max size constraint (`self`) through the aspect ratio
     /// into the other axis, but only into an axis whose preferred size (`preferred`, resolved,
     /// before the ratio is applied to it) is `auto`. css-sizing-4 §5.1: a constraint is
