@@ -286,7 +286,7 @@ pub(super) fn align_and_position_item(
     // RINCH: a height from the stretch below, or measured for an absolutely positioned box, is
     // imposed from outside the box ([`LayoutInput::known_height_is_outer`]; a table's wrapper,
     // rinch #2596). One from its own size or a sizing keyword is not.
-    let height_is_outer = height.is_none() && !matches!(keyword_height, Some(Some(_)));
+    let height_is_outer = resolves_own_height && height.is_none() && !matches!(keyword_height, Some(Some(_)));
     let height = height.or_else(|| {
         if position == Position::Absolute && !resolves_own_height {
             if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {

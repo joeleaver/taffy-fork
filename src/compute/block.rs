@@ -2396,7 +2396,8 @@ fn perform_absolute_layout_on_absolute_children(
             }
         };
         let final_size = unclamped_size.maybe_clamp(min_size, max_size);
-        let height_is_outer = known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
+        let height_is_outer =
+            resolves_own_height && known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
 
         let layout_output = tree.perform_child_layout_with_outer_height(
             item.node_id,

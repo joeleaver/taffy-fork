@@ -59,6 +59,8 @@ struct FlexItem {
     main_is_outer: bool,
     /// RINCH: the same for its cross size (a table in a row: stretched or measured)
     cross_is_outer: bool,
+    /// RINCH: `FlexboxItemStyle::resolves_own_height`: a table, the one reader of those two
+    resolves_own_height: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -808,6 +810,7 @@ fn generate_anonymous_flex_items(
                 resolves_own_width: child_style.resolves_own_width(),
                 main_is_outer: false,
                 cross_is_outer: false,
+                resolves_own_height: child_style.resolves_own_height(),
 
                 inset: child_style
                     .inset()
@@ -2764,7 +2767,8 @@ fn calculate_flex_item(
             parent_size: node_inner_size,
             available_space: container_size.map(|s| s.into()),
             vertical_margins_are_collapsible: Line::FALSE,
-            known_height_is_outer: if constants.is_row { item.cross_is_outer } else { item.main_is_outer },
+            known_height_is_outer: item.resolves_own_height
+                && if constants.is_row { item.cross_is_outer } else { item.main_is_outer },
         },
     );
     let LayoutOutput {
@@ -3151,7 +3155,8 @@ fn perform_absolute_layout_on_absolute_children(
         // RINCH: a height measured from the box, not resolved from its own sizes, is imposed from
         // outside it ([`LayoutInput::known_height_is_outer`]; a table's wrapper, rinch #2596), unless
         // its min or max height then changed it.
-        let height_is_outer = known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
+        let height_is_outer =
+            resolves_own_height && known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
 
         let layout_output = tree.perform_child_layout_with_outer_height(
             child,
