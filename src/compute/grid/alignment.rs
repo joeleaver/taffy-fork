@@ -351,8 +351,9 @@ pub(super) fn align_and_position_item(
     };
     let unclamped_height = height;
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
-    // A stretch its own min or max height held is not imposed from outside.
-    let height_is_outer = height_is_outer && height == unclamped_height;
+    // A table takes a stretch whole: its own min and max hold its table box, what is left of the
+    // stretch after its captions (Chrome 156, rinch #2596).
+    let height = if height_is_outer { unclamped_height } else { height };
 
     // RINCH: an absolutely positioned table is not sized by its insets but shrinks to fit the
     // room they leave (rinch #2403): a long paragraph in it wraps there.

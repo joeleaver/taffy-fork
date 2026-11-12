@@ -2356,8 +2356,7 @@ fn perform_absolute_layout_on_absolute_children(
             area_width_less_margins
         };
         // RINCH: a height measured from the box, not resolved from its own sizes, is imposed from
-        // outside it ([`LayoutInput::known_height_is_outer`]; a table's wrapper, rinch #2596), unless
-        // its min or max height then changed it.
+        // outside it ([`LayoutInput::known_height_is_outer`]; a table's wrapper, rinch #2596).
         let unclamped_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
@@ -2395,9 +2394,12 @@ fn perform_absolute_layout_on_absolute_children(
                 }
             }
         };
-        let final_size = unclamped_size.maybe_clamp(min_size, max_size);
-        let height_is_outer =
-            resolves_own_height && known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
+        let mut final_size = unclamped_size.maybe_clamp(min_size, max_size);
+        let height_is_outer = resolves_own_height && known_dimensions.height.is_none();
+        if height_is_outer {
+            // A table measures its own min and max on its table box: not clamped again.
+            final_size.height = unclamped_size.height;
+        }
 
         let layout_output = tree.perform_child_layout_with_outer_height(
             item.node_id,
