@@ -50,6 +50,9 @@ struct FlexItem {
     aspect_ratio: Option<f32>,
     /// RINCH (#1562): `CoreStyle::ratio_height_is_content_floor` of this item
     ratio_height_is_content_floor: bool,
+    /// RINCH: `FlexboxItemStyle::resolves_own_width` of this item: an automatic-layout table,
+    /// never narrower than its columns' minimum (rinch #2328)
+    resolves_own_width: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -721,6 +724,7 @@ fn generate_anonymous_flex_items(
                     .maybe_add(box_sizing_adjustment),
                 aspect_ratio,
                 ratio_height_is_content_floor: child_style.ratio_height_is_content_floor(),
+                resolves_own_width: child_style.resolves_own_width(),
 
                 inset: child_style
                     .inset()
@@ -1116,6 +1120,24 @@ fn determine_flex_base_size(
                 min_content_main_size.maybe_min(child.size.main(dir)).maybe_min(transferred_max_size.main(dir));
             clamped_min_content_size.maybe_max(padding_border_axes_sums.main(dir))
         });
+
+        // RINCH: a table's columns' minimum is a floor under its width that no `width`,
+        // `flex-basis` or `min-width` lowers (CSS 2.1 §17.5.2.2): Chrome 156 lays a `width: 100px`
+        // table of a 300px column out 300 wide in a row, also with `min-width: 0` (rinch #2328).
+        // Its border box: a table measured in `ContentSize` mode is its columns, spacing,
+        // padding and border.
+        if child.resolves_own_width && dir.is_row() {
+            let columns_minimum = tree.measure_child_size(
+                child.node,
+                child_known_dimensions.with_main(dir, None),
+                child_parent_size,
+                Size::MIN_CONTENT.with_cross(dir, child_measure_cross),
+                SizingMode::ContentSize,
+                dir.main_axis(),
+                Line::FALSE,
+            );
+            child.resolved_minimum_main_size = child.resolved_minimum_main_size.max(columns_minimum);
+        }
 
         // Sizes transferred through the aspect ratio clamp the hypothetical main size,
         // but do not participate in resolving flexible lengths or clamping the final size.
@@ -2051,6 +2073,22 @@ fn determine_hypothetical_cross_size(
             };
             measured.maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum)
         });
+        // RINCH: a table in a column is never narrower than its columns' minimum, whatever its
+        // `width` (Chrome 156, rinch #2328): the item lays out wider, and the line is as wide.
+        let child_inner_cross = if !constants.is_row && child.resolves_own_width {
+            let columns_minimum = tree.measure_child_size(
+                child.node,
+                Size::NONE,
+                constants.node_inner_size,
+                Size { width: AvailableSpace::MinContent, height: child_known_main },
+                SizingMode::ContentSize,
+                crate::AbsoluteAxis::Horizontal,
+                Line::FALSE,
+            );
+            f32_max(child_inner_cross, columns_minimum)
+        } else {
+            child_inner_cross
+        };
         let child_outer_cross = child_inner_cross + child.margin.cross_axis_sum(constants.dir);
 
         child.hypothetical_inner_size.set_cross(constants.dir, child_inner_cross);
@@ -2924,6 +2962,7 @@ fn perform_absolute_layout_on_absolute_children(
             )
             .maybe_add(box_sizing_adjustment);
         let mut known_dimensions = style_size.maybe_clamp(min_size, max_size);
+        let resolves_own_width = child_style.resolves_own_width();
         let resolves_own_height = child_style.resolves_own_height();
 
         drop(child_style);
@@ -2948,7 +2987,8 @@ fn perform_absolute_layout_on_absolute_children(
         // Fill in width from left/right and reapply aspect ratio if:
         //   - Width is not already known
         //   - Item has both left and right inset properties set
-        if let (None, Some(left), Some(right)) = (known_dimensions.width, left, right) {
+        //   - RINCH: and the item is not a table, which its insets place only (rinch #2403)
+        if let (None, Some(left), Some(right), false) = (known_dimensions.width, left, right, resolves_own_height) {
             let new_width_raw = inset_relative_size.width.maybe_sub(margin.left).maybe_sub(margin.right) - left - right;
             known_dimensions.width = Some(f32_max(new_width_raw, 0.0));
             known_dimensions = known_dimensions.maybe_apply_aspect_ratio(aspect_ratio).maybe_clamp(min_size, max_size);
@@ -2957,7 +2997,8 @@ fn perform_absolute_layout_on_absolute_children(
         // Fill in height from top/bottom and reapply aspect ratio if:
         //   - Height is not already known
         //   - Item has both top and bottom inset properties set
-        if let (None, Some(top), Some(bottom)) = (known_dimensions.height, top, bottom) {
+        //   - RINCH: and the item is not a table (rinch #2403)
+        if let (None, Some(top), Some(bottom), false) = (known_dimensions.height, top, bottom, resolves_own_height) {
             let new_height_raw =
                 inset_relative_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - top - bottom;
             known_dimensions.height = Some(f32_max(new_height_raw, 0.0));
@@ -2966,6 +3007,13 @@ fn perform_absolute_layout_on_absolute_children(
         // RINCH: the room for the box's border box, its horizontal margins out (rinch #2361), as
         // for every other child.
         let container_width_less_margins = container_width - margin.left.unwrap_or(0.0) - margin.right.unwrap_or(0.0);
+        // RINCH: a table between `left` and `right` is not sized by them but shrinks to fit the
+        // room they leave (rinch #2403): a long paragraph in it wraps there.
+        let container_width_less_margins = if resolves_own_height {
+            f32_max(container_width_less_margins - left.unwrap_or(0.0) - right.unwrap_or(0.0), 0.0)
+        } else {
+            container_width_less_margins
+        };
         let final_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
@@ -3003,12 +3051,19 @@ fn perform_absolute_layout_on_absolute_children(
             Line::FALSE,
         );
         // RINCH: an absolutely positioned table is never shorter than its rows, whatever height
-        // its `height` or insets give it (Chrome 156, rinch #2358). Insets that give it more than
-        // its rows still stretch it, where Chrome does not (rinch #2403).
-        let final_size = if resolves_own_height {
-            Size { width: final_size.width, height: f32_max(final_size.height, layout_output.size.height) }
-        } else {
-            final_size
+        // its `height` gives it (Chrome 156, rinch #2358), nor narrower than its columns' minimum,
+        // whatever its `width` (rinch #2328). Its insets do not size it (above, rinch #2403).
+        let final_size = Size {
+            width: if resolves_own_width {
+                f32_max(final_size.width, layout_output.size.width)
+            } else {
+                final_size.width
+            },
+            height: if resolves_own_height {
+                f32_max(final_size.height, layout_output.size.height)
+            } else {
+                final_size.height
+            },
         };
 
         let non_auto_margin = margin.map(|m| m.unwrap_or(0.0));

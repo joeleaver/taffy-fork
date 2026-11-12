@@ -918,6 +918,16 @@ impl<S: CheapCloneStr> Style<S> {
         #[cfg(feature = "grid")]
         grid_column: Line { start: GridPlacement::<S>::Auto, end: GridPlacement::<S>::Auto },
     };
+
+    /// RINCH: whether this is an automatic-layout CSS table: a grid with
+    /// [`Self::proportional_column_sizing`] and sized [`Self::table_rows`] (not a block standing
+    /// for an anonymous table, nor a `table-layout: fixed` one). It is never narrower than its
+    /// columns' minimum (CSS 2.1 §17.5.2.2), whatever width it is handed.
+    #[cfg(feature = "grid")]
+    #[inline(always)]
+    pub fn is_auto_layout_table(&self) -> bool {
+        self.proportional_column_sizing && self.table_rows.as_ref().is_some_and(|t| t.sized)
+    }
 }
 
 impl<S: CheapCloneStr> Default for Style<S> {
@@ -1131,6 +1141,14 @@ impl<S: CheapCloneStr> BlockItemStyle for Style<S> {
     }
 
     #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        #[cfg(feature = "grid")]
+        return self.is_auto_layout_table();
+        #[cfg(not(feature = "grid"))]
+        false
+    }
+
+    #[inline(always)]
     fn justify_self(&self) -> Option<AlignSelf> {
         #[cfg(feature = "grid")]
         return self.justify_self;
@@ -1161,6 +1179,10 @@ impl<T: BlockItemStyle> BlockItemStyle for &'_ T {
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         (*self).resolves_own_height()
+    }
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        (*self).resolves_own_width()
     }
 
     #[inline(always)]
@@ -1272,6 +1294,14 @@ impl<S: CheapCloneStr> FlexboxItemStyle for Style<S> {
         #[cfg(not(feature = "grid"))]
         false
     }
+
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        #[cfg(feature = "grid")]
+        return self.is_auto_layout_table();
+        #[cfg(not(feature = "grid"))]
+        false
+    }
 }
 
 #[cfg(feature = "flexbox")]
@@ -1295,6 +1325,10 @@ impl<T: FlexboxItemStyle> FlexboxItemStyle for &'_ T {
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         (*self).resolves_own_height()
+    }
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        (*self).resolves_own_width()
     }
 }
 
@@ -1545,6 +1579,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
     fn resolves_own_height(&self) -> bool {
         self.table_rows.as_ref().is_some_and(|t| t.sized)
     }
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        self.is_auto_layout_table()
+    }
 }
 
 #[cfg(feature = "grid")]
@@ -1572,6 +1610,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         (*self).resolves_own_height()
+    }
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        (*self).resolves_own_width()
     }
 }
 

@@ -327,6 +327,15 @@ pub trait GridItemStyle: CoreStyle {
         false
     }
 
+    /// RINCH: whether the item is an automatic-layout table ([`crate::Style::table_rows`] and
+    /// [`crate::Style::proportional_column_sizing`]): it is never narrower than its columns'
+    /// minimum, whatever width its grid area or its `width` gives it (Chrome 156, rinch #2328,
+    /// #2395); it overflows a narrower track.
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        false
+    }
+
     /// Get a grid item's row or column placement depending on the axis passed
     #[inline(always)]
     fn grid_placement(&self, axis: AbsoluteAxis) -> Line<GridPlacement<Self::CustomIdent>> {
