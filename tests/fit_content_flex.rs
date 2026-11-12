@@ -411,3 +411,41 @@ fn a_float_column_resolves_an_items_percentage_width_against_its_width() {
     let case = Case { parent: block(), container: column, items: vec![width_percent(0.3), block()] };
     assert_eq!(layout_with_items(case).1, vec![78.0, 260.0]);
 }
+
+/// Measure calls for `depth` nested floats, each a flex row of a `width: 90%`
+/// item holding the next and a text leaf (review of rinch #2611). Sizing the
+/// width with a full flex pass before the layout laid each level out at more
+/// distinct sizes the deeper it was, once the innermost text was narrower than
+/// its minimum (from depth 11): 385 measures at depth 12, 1,450 at 13, 4,711
+/// at 14. The width now comes from the container's min- and max-content sizes,
+/// which the cache keeps: 146, 167, 191, settling at 28 more per level.
+fn nested_percentage_floats_measures(depth: usize) -> usize {
+    let mut tree: TaffyTree<bool> = TaffyTree::new();
+    let mut inner = tree.new_leaf_with_context(block(), true).unwrap();
+    for _ in 0..depth {
+        let item = tree.new_with_children(width_percent(0.9), &[inner]).unwrap();
+        let text = tree.new_leaf_with_context(block(), true).unwrap();
+        inner = tree.new_with_children(floated(row()), &[item, text]).unwrap();
+    }
+    let root = tree
+        .new_with_children(Style { size: Size { width: length(300.0), height: auto() }, ..block() }, &[inner])
+        .unwrap();
+    let mut calls = 0;
+    tree.compute_layout_with_measure(root, Size::MAX_CONTENT, |inputs, _, ctx, style| match ctx {
+        Some(true) => {
+            calls += 1;
+            compute_leaf_layout(inputs, style, |_, _| 0.0, text)
+        }
+        _ => compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO),
+    })
+    .unwrap();
+    calls
+}
+
+#[test]
+fn nested_percentage_floats_measure_linearly_in_depth() {
+    // Past depth 11 a level costs 16 to 28 measures; it was 1,065 at depth 12 and tripling.
+    let step = |depth: usize| nested_percentage_floats_measures(depth + 1) - nested_percentage_floats_measures(depth);
+    let (at_11, at_13) = (step(11), step(13));
+    assert!(at_13 <= 2 * at_11, "measures per level at depth 11: {at_11}, at 13: {at_13}");
+}

@@ -338,19 +338,37 @@ pub fn compute_flexbox_layout(
         && !(run_mode == RunMode::ComputeSize && inputs.axis == RequestedAxis::Horizontal)
         && percentages_resolve_against_width(tree, node)
     {
-        let width = compute_preliminary(
-            tree,
-            node,
-            LayoutInput {
-                known_dimensions: styled_based_known_dimensions,
-                known_dimensions_are_definite,
-                run_mode: RunMode::ComputeSize,
-                axis: RequestedAxis::Horizontal,
-                ..inputs
-            },
-        )
-        .size
-        .width;
+        // The width from the container's min- and max-content widths, asked through the cache
+        // (a width-only question skips this branch, so it does not recurse): each is one entry
+        // whatever the room, where a full flex pass at the room laid every item out again at
+        // each nesting level, and nested floats grew threefold per level (review of rinch #2611).
+        let mut intrinsic = |space: AvailableSpace| {
+            tree.compute_child_layout(
+                node,
+                LayoutInput {
+                    run_mode: RunMode::ComputeSize,
+                    axis: RequestedAxis::Horizontal,
+                    available_space: Size { width: space, ..inputs.available_space },
+                    ..inputs
+                },
+            )
+            .size
+            .width
+        };
+        let width = match inputs.available_space.width {
+            AvailableSpace::MinContent => intrinsic(AvailableSpace::MinContent),
+            AvailableSpace::MaxContent => intrinsic(AvailableSpace::MaxContent),
+            // `min(max-content, max(min-content, room))` (css-sizing-3 §5.2), as
+            // `fit_content_main_size` gives a row and the items' fit give a column.
+            AvailableSpace::Definite(room) => {
+                let max_content = intrinsic(AvailableSpace::MaxContent);
+                if max_content <= room {
+                    max_content
+                } else {
+                    f32_min(max_content, f32_max(intrinsic(AvailableSpace::MinContent), room))
+                }
+            }
+        };
         styled_based_known_dimensions.width = Some(width);
     }
 
