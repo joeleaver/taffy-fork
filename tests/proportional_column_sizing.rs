@@ -294,15 +294,16 @@ fn empty_auto_columns_share_the_excess_equally_before_the_declared_ones() {
 #[test]
 fn the_excess_goes_to_a_declared_column_before_a_percentage_one() {
     // `minmax(min-content, 20%)` and a 100px column in a 808px grid: the
-    // percentage column stops at 20% (of 808, gap included: 161.6), the
-    // declared one takes the rest of the 804. Chrome 156: 157.59 / 630.41 for
-    // the same in an 800px table (its basis leaves all the spacing out, rinch
-    // #2333).
+    // percentage column stops at 20% of the width less the 4px gutter (804:
+    // 160.8, a table's basis leaves out every spacing, rinch #2333), the
+    // declared one takes the rest of the 804. Chrome 156 for the same in an
+    // 800px table with a 4px spacing (basis 800 - 3 x 4 = 788): 157.59 /
+    // 630.41. Before #2333 the basis was the grid's 808, gap included: 161.6.
     let (got, _) = table(
         Some(808.0),
         &[minmax(min_content(), percent(0.2)), minmax(min_content(), length(100.0))],
         &[(1.0, 40.0), (1.0, 40.0)],
         None,
     );
-    assert_near(&got, &[161.6, 642.4]);
+    assert_near(&got, &[160.8, 643.2]);
 }

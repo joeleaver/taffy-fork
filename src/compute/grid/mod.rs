@@ -353,6 +353,19 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     // Determine if the grid has any baseline aligned items
     let has_baseline_aligned_item = items.iter().any(|item| item.participates_in_baseline_alignment());
 
+    // RINCH: an automatic-layout CSS table's percentage column
+    // ([`crate::Style::proportional_column_sizing`]) resolves against the table's width less every
+    // border-spacing (Blink: the table's content width less `(n + 1)` spacings), where a grid's
+    // resolves against its content box, gaps included. The outer spacing is the table's padding,
+    // so the gutters between the columns are what is left to take out (rinch #2333).
+    let mut percent_columns_rescaled = false;
+    if proportional_column_sizing {
+        if let Some(width) = inner_node_size.width {
+            percent_columns_rescaled =
+                rescale_table_percent_columns(&mut columns, width, |val, basis| tree.calc(val, basis));
+        }
+    }
+
     // Run track sizing algorithm for Inline axis
     track_sizing_algorithm(
         tree,
@@ -532,6 +545,12 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
     let mut intrinsic_row_contribution_changed = false;
 
     if rerun_column_sizing {
+        // RINCH: the width a table's percentage columns resolve against is known now (#2333).
+        if proportional_column_sizing && !percent_columns_rescaled {
+            if let Some(width) = inner_node_size.width {
+                rescale_table_percent_columns(&mut columns, width, |val, basis| tree.calc(val, basis));
+            }
+        }
         // Re-run track sizing algorithm for Inline axis
         track_sizing_algorithm(
             tree,
@@ -1267,4 +1286,32 @@ impl DetailedGridItemsInfo {
             column_end: to_one_indexed_grid_line(grid_item.column_indexes.end),
         }
     }
+}
+
+/// RINCH: scale a CSS table's percentage columns so that, resolved against the grid's content
+/// width `width` as every grid track is, each comes out as its percentage of `width` less the
+/// gutters between the columns: the basis a table's percentage column has (rinch #2333; Blink
+/// leaves every border-spacing out of it). Returns whether there were gutters to take out.
+fn rescale_table_percent_columns(columns: &mut [GridTrack], width: f32, calc: impl Fn(*const (), f32) -> f32) -> bool {
+    use crate::CompactLength;
+    let gutters: f32 = columns
+        .iter()
+        .filter(|t| t.kind == types::GridTrackKind::Gutter && !t.is_collapsed)
+        .filter_map(|t| t.max_track_sizing_function.definite_value(Some(width), &calc))
+        .sum();
+    if gutters <= 0.0 || width <= 0.0 {
+        return false;
+    }
+    let scale = f32_max(0.0, width - gutters) / width;
+    for track in columns.iter_mut().filter(|t| t.kind == types::GridTrackKind::Track) {
+        let max = track.max_track_sizing_function.into_raw();
+        if max.tag() == CompactLength::PERCENT_TAG {
+            track.max_track_sizing_function = crate::MaxTrackSizingFunction::percent(max.value() * scale);
+        }
+        let min = track.min_track_sizing_function.into_raw();
+        if min.tag() == CompactLength::PERCENT_TAG {
+            track.min_track_sizing_function = crate::MinTrackSizingFunction::percent(min.value() * scale);
+        }
+    }
+    true
 }
