@@ -441,6 +441,14 @@ struct BlockItem {
     /// inline space ([`BlockJustify`]); `None` is `normal` / `stretch` (the item starts, and an
     /// auto width stretches).
     justify: Option<BlockJustify>,
+    /// RINCH (rinch #2541): an absolutely positioned item's `justify-self` (else the container's
+    /// `justify-items`), which aligns it in its static-position rectangle when both its inline
+    /// insets are `auto` (css-position-3 §4.1). `None` for every other item.
+    static_justify: Option<BlockJustify>,
+    /// RINCH (rinch #2541): an absolutely positioned item's static-position rectangle on the
+    /// inline axis, the container's content box: its physical left and right edges, from the
+    /// container's border-box left.
+    static_inline_span: (f32, f32),
 }
 
 /// RINCH: a block-level box's `justify-self` in block layout (css-align-3 §6.1): the part of the
@@ -1051,6 +1059,46 @@ fn justify_shift(
     }
 }
 
+/// RINCH (rinch #2541): the border-box left of an absolutely positioned box with both inline
+/// insets `auto`, aligned by `justify` in its static-position rectangle `span` (the container's
+/// content box, physical left and right). css-position-3 §4.1 turns the rectangle into the
+/// inset-modified containing block the box is aligned in: from the rectangle's start edge to the
+/// containing block's end (`cb`, physical left and right) for a start-aligned box, from the
+/// containing block's start to the rectangle's end for an end-aligned one, and for a centred one
+/// the widest span centred on the rectangle's centre that stays inside the containing block — so
+/// an overflowing box spills, or under `safe` starts, from those edges (Chrome 157). `width` is
+/// the border box's, `margin` the resolved left and right margins.
+fn static_aligned_x(
+    justify: BlockJustify,
+    span: (f32, f32),
+    cb: (f32, f32),
+    width: f32,
+    margin: (f32, f32),
+    direction: Direction,
+) -> f32 {
+    // Lengths from the containing block's inline-start edge.
+    let cb_width = cb.1 - cb.0;
+    let (start, end, margin_start, margin_end) = match direction {
+        Direction::Ltr => (span.0 - cb.0, span.1 - cb.0, margin.0, margin.1),
+        Direction::Rtl => (cb.1 - span.1, cb.1 - span.0, margin.1, margin.0),
+    };
+    let (from, to) = if justify.fraction == 0.0 {
+        (start, cb_width)
+    } else if justify.fraction == 1.0 {
+        (0.0, end)
+    } else {
+        let centre = (start + end) / 2.0;
+        let half = f32_max(0.0, centre.min(cb_width - centre));
+        (centre - half, centre + half)
+    };
+    let free_space = to - from - width - margin_start - margin_end;
+    let box_start = from + justify.offset(free_space) + margin_start;
+    match direction {
+        Direction::Ltr => cb.0 + box_start,
+        Direction::Rtl => cb.1 - box_start - width,
+    }
+}
+
 /// Create a `Vec` of `BlockItem` structs where each item in the `Vec` represents a child of the current node
 #[inline]
 fn generate_item_list(
@@ -1112,6 +1160,17 @@ fn generate_item_list(
                     container_direction,
                 )
             };
+            // RINCH (rinch #2541): an absolutely positioned box's own alignment, read only where
+            // both its inline insets are `auto` (`perform_absolute_layout_on_absolute_children`).
+            let static_justify = if position == Position::Absolute {
+                BlockJustify::resolve(
+                    child_style.justify_self().or(justify_items),
+                    child_style.direction(),
+                    container_direction,
+                )
+            } else {
+                None
+            };
             // An aligned box's auto width is `fit-content` (css-align-3 §6.1), as a table's is.
             let size_style = {
                 let size = child_style.size();
@@ -1172,6 +1231,8 @@ fn generate_item_list(
                 can_be_collapsed_through: false,
                 final_layout: None,
                 justify,
+                static_justify,
+                static_inline_span: (0.0, 0.0),
             }
         })
         .collect()
@@ -1425,7 +1486,9 @@ fn perform_final_layout_on_in_flow_children(
                 Direction::Ltr => resolved_content_box_inset.left,
                 Direction::Rtl => container_outer_width - resolved_content_box_inset.right,
             };
-            item.static_position = Point { x, y: y_offset_for_absolute }
+            item.static_position = Point { x, y: y_offset_for_absolute };
+            item.static_inline_span =
+                (resolved_content_box_inset.left, container_outer_width - resolved_content_box_inset.right);
         } else {
             let item_margin = item
                 .margin
@@ -2392,13 +2455,22 @@ fn perform_absolute_layout_on_absolute_children(
             }
             (Some(left), None) => left + resolved_margin.left,
             (None, Some(right)) => area_size.width - final_size.width - right - resolved_margin.right,
-            (None, None) => {
-                if direction.is_rtl() {
-                    item.static_position.x - final_size.width - resolved_margin.right - area_offset.x
-                } else {
-                    item.static_position.x + resolved_margin.left - area_offset.x
+            (None, None) => match item.static_justify {
+                Some(justify) => {
+                    static_aligned_x(
+                        justify,
+                        item.static_inline_span,
+                        (area_offset.x, area_offset.x + area_size.width),
+                        final_size.width,
+                        (resolved_margin.left, resolved_margin.right),
+                        direction,
+                    ) - area_offset.x
                 }
-            }
+                None if direction.is_rtl() => {
+                    item.static_position.x - final_size.width - resolved_margin.right - area_offset.x
+                }
+                None => item.static_position.x + resolved_margin.left - area_offset.x,
+            },
         };
         let location = Point {
             x: x_offset + area_offset.x,
