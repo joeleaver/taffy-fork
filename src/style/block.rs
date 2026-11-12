@@ -40,6 +40,15 @@ pub trait BlockItemStyle: CoreStyle {
         false
     }
 
+    /// RINCH: whether the item is an automatic-layout table ([`crate::Style::table_rows`] and
+    /// [`crate::Style::proportional_column_sizing`]): it is never narrower than its columns'
+    /// minimum, whatever width its parent hands it or its `width` gives it (CSS 2.1 §17.5.2.2),
+    /// so its contribution to its parent's intrinsic width is at least that minimum (rinch #2328).
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        false
+    }
+
     /// RINCH: `justify-self`: where the item goes on its container's inline axis (css-align-3
     /// §6.1). `None` is `auto` (the container's `justify-items`).
     #[inline(always)]

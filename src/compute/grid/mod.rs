@@ -444,11 +444,14 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             .maybe_clamp(min_size.height, max_size.height)
             .max(padding_border_size.height),
     };
-    // RINCH: a CSS table that resolves its own width ([`crate::Style::proportional_column_sizing`],
-    // and no width imposed by its parent) is never narrower than its columns' minimum: CSS 2.1
-    // §17.5.2.2 makes the used width of an automatic-layout table the greater of its `width` and
-    // the width its columns need. A grid's tracks overflow it instead.
-    if proportional_column_sizing && known_dimensions.width.is_none() {
+    // RINCH: a CSS table that resolves its own width ([`crate::Style::proportional_column_sizing`])
+    // is never narrower than its columns' minimum: CSS 2.1 §17.5.2.2 makes the used width of an
+    // automatic-layout table the greater of its `width` and the width its columns need. A grid's
+    // tracks overflow it instead. A table ([`crate::Style::table_rows`]) does so also when its
+    // parent hands it a width (a flex or grid item, an absolutely positioned table: Chrome 156,
+    // rinch #2328, #2395), and the parent lays it out at the width it returns; a block standing
+    // for an anonymous table keeps a width it is handed.
+    if proportional_column_sizing && (known_dimensions.width.is_none() || table_sized) {
         container_border_box.width =
             f32_max(container_border_box.width, initial_column_sum + content_box_inset.horizontal_axis_sum());
     }

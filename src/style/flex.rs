@@ -80,6 +80,15 @@ pub trait FlexboxItemStyle: CoreStyle {
     fn resolves_own_height(&self) -> bool {
         false
     }
+
+    /// RINCH: whether the item is an automatic-layout table ([`crate::Style::table_rows`] and
+    /// [`crate::Style::proportional_column_sizing`]): its columns' minimum is a floor under its
+    /// width that no `width`, `flex-basis`, `min-width` or shrinking lowers (Chrome 156, rinch
+    /// #2328), and a width it is handed (a stretched item of a column) is widened to it.
+    #[inline(always)]
+    fn resolves_own_width(&self) -> bool {
+        false
+    }
 }
 
 use crate::geometry::AbsoluteAxis;
