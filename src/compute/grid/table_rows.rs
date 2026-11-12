@@ -119,6 +119,18 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     }
     let gap = |k: usize, tracks: &[GridTrack]| tracks.get(2 * k + 2).map_or(0.0, |t| t.base_size);
 
+    // How many cells aligned by its row's baseline start in each row. A cell of span 1 alone in
+    // its row needs no room beyond its own height, so it is not measured for it (a
+    // `display: table-cell` box is `vertical-align: baseline` by default, and the measure is a
+    // layout of its own).
+    let mut baseline_cells: Vec<u16> = (0..count).map(|_| 0).collect();
+    for item in items.iter() {
+        let start = (item.track_range_excluding_lines(AbstractAxis::Block).start.saturating_sub(1)) / 2;
+        if item.table_row_baseline && start < count {
+            baseline_cells[start] = baseline_cells[start].saturating_add(1);
+        }
+    }
+
     // Each cell of span 1 sets its row's least height; the spanning ones are kept for later.
     let mut rowspans: Vec<Rowspan> = Vec::new();
     for item in items.iter_mut() {
@@ -143,7 +155,7 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
         // A cell aligned by its row's baseline lines up in its first row: the row is at least as
         // tall as the lowest baseline plus the deepest extent below it of a cell of span 1 (Blink's
         // `RowBaselineTabulator`; a spanning cell's extent is its rows' to share, as its height is).
-        if item.table_row_baseline && !kind(start).caption {
+        if item.table_row_baseline && !kind(start).caption && (span > 1 || baseline_cells[start] > 1) {
             if let Some((ascent, descent)) = item.table_row_baseline_extent(tree, grid_area_size) {
                 let row = &mut rows[start];
                 row.ascent = Some(row.ascent.map_or(ascent, |a| f32_max(a, ascent)));
