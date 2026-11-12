@@ -114,6 +114,17 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
         };
     }
 
+    // RINCH: whether a height the parent hands a table ([`crate::Style::table_rows`]) is its
+    // wrapper's, captions included (a stretched or flexed item, an absolutely positioned table laid
+    // out at the height it measured: Blink takes the captions out of such a size), rather than the
+    // table's own `height`, which is its table box's, the captions outside it (CSS 2.2 §17.4). A
+    // parent hands an item its own `height` as `known_dimensions` too, so a handed height equal to
+    // it is taken as it (rinch #2596).
+    let height_holds_captions = known_dimensions.height.is_some_and(|handed| {
+        let own = style.size().maybe_resolve(parent_size, |val, basis| tree.calc(val, basis)).height;
+        own.map_or(true, |own| (own + box_sizing_adjustment.height - handed).abs() > 0.01)
+    });
+
     // Scrollbar gutters are reserved when the `overflow` property is set to `Overflow::Scroll`.
     // However, the axis are switched (transposed) because a node that scrolls vertically needs
     // *horizontal* space to be reserved for a scrollbar
@@ -403,6 +414,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
             inner_node_size,
             final_row_counts.negative_implicit as usize,
             table_height,
+            height_holds_captions,
         );
     } else {
         track_sizing_algorithm(
@@ -628,6 +640,7 @@ pub fn compute_grid_layout<Tree: LayoutGridContainer>(
                     inner_node_size,
                     final_row_counts.negative_implicit as usize,
                     table_height,
+                    height_holds_captions,
                 );
             } else {
                 track_sizing_algorithm(

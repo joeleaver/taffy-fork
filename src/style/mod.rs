@@ -722,6 +722,8 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// - Each row is as tall as its tallest cell of span 1, and at least its track's minimum (a
     ///   row's `height`, written as `minmax(<height>, auto)`). A row with a length minimum, or a
     ///   cell of span 1 with a length `min_size.height`, is *constrained*.
+    /// - A row is at least as tall as the lowest first baseline of its cells with
+    ///   [`Self::table_row_baseline`] plus the deepest extent of one of span 1 below its baseline.
     /// - A spanning cell taller than its rows grows them: first the rows (past the first) where
     ///   another spanning cell starts, equally; else the unconstrained non-empty rows, in
     ///   proportion to their heights; else the empty ones (all of it to the last when every row
@@ -730,7 +732,8 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     ///   body sections (in proportion to their heights, as their rows were before any spanning
     ///   cell grew them), and each section to its rows as above,
     ///   but with no rowspan step and with empty rows growing only when every non-empty one is
-    ///   constrained. A caption takes none of it. A table shorter than its rows (and captions)
+    ///   constrained. A caption takes none of it. A height the parent hands the table (not its own `height`)
+    ///   holds its captions, which come out of it first. A table shorter than its rows (and captions)
     ///   grows to them, unless its height was imposed by its parent.
     ///
     /// Percentage row heights are not modelled.
@@ -748,6 +751,13 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// `SetupTableCellConstraintSpaceBuilder`). Grid items proper are clamped (css-grid-1 §6.2).
     #[cfg(feature = "grid")]
     pub stretch_past_max_width: bool,
+    /// RINCH: a CSS table cell aligned by its row's baseline (`vertical-align: baseline`), in a
+    /// grid with [`Self::table_rows`]. Its row is at least as tall as the lowest first baseline of
+    /// such cells plus the deepest extent of a span-1 one below its own baseline (Blink's
+    /// `RowBaselineTabulator`). The embedder moves the cell's content down to the row's baseline;
+    /// the grid only sizes the row for it.
+    #[cfg(feature = "grid")]
+    pub table_row_baseline: bool,
     /// How should content contained within this item be aligned in the cross/block axis
     #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
     pub align_content: Option<AlignContent>,
@@ -876,6 +886,8 @@ impl<S: CheapCloneStr> Style<S> {
         justify_self: None,
         #[cfg(feature = "grid")]
         stretch_past_max_width: false,
+        #[cfg(feature = "grid")]
+        table_row_baseline: false,
         #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
         align_content: None,
         #[cfg(any(feature = "flexbox", feature = "grid"))]
@@ -1576,6 +1588,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
         self.stretch_past_max_width
     }
     #[inline(always)]
+    fn table_row_baseline(&self) -> bool {
+        self.table_row_baseline
+    }
+    #[inline(always)]
     fn resolves_own_height(&self) -> bool {
         self.table_rows.as_ref().is_some_and(|t| t.sized)
     }
@@ -1606,6 +1622,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn stretch_past_max_width(&self) -> bool {
         (*self).stretch_past_max_width()
+    }
+    #[inline(always)]
+    fn table_row_baseline(&self) -> bool {
+        (*self).table_row_baseline()
     }
     #[inline(always)]
     fn resolves_own_height(&self) -> bool {
@@ -1667,6 +1687,8 @@ mod tests {
             justify_self: Default::default(),
             #[cfg(feature = "grid")]
             stretch_past_max_width: false,
+            #[cfg(feature = "grid")]
+            table_row_baseline: false,
             #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
             align_content: Default::default(),
             #[cfg(any(feature = "flexbox", feature = "grid"))]

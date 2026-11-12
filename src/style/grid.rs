@@ -318,6 +318,12 @@ pub trait GridItemStyle: CoreStyle {
     fn stretch_past_max_width(&self) -> bool {
         Style::<Self::CustomIdent>::DEFAULT.stretch_past_max_width
     }
+    /// RINCH: whether the item is a table cell aligned by its row's baseline
+    /// ([`crate::Style::table_row_baseline`])
+    #[inline(always)]
+    fn table_row_baseline(&self) -> bool {
+        Style::<Self::CustomIdent>::DEFAULT.table_row_baseline
+    }
 
     /// RINCH: whether the item is a table that grows to its rows ([`crate::Style::table_rows`]):
     /// a height its grid area hands it is the least it is, as Chrome 156 treats a table grid

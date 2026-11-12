@@ -1,9 +1,9 @@
 //! RINCH: sizes a grid's rows as a CSS table sizes its rows ([`crate::Style::table_rows`]).
 //!
 //! CSS 2.2 §17.5.3 leaves the algorithm to the user agent; this is Blink's (LayoutNG
-//! `table_layout_utils.cc`: `ComputeMinimumRowBlockSize`, `DistributeRowspanCellToRows`,
-//! `DistributeTableBlockSizeToSections` and `DistributeExcessBlockSizeToRows`), less percentage
-//! rows and row baselines.
+//! `table_layout_utils.cc`: `ComputeMinimumRowBlockSize` with its `RowBaselineTabulator`,
+//! `DistributeRowspanCellToRows`, `DistributeTableBlockSizeToSections` and
+//! `DistributeExcessBlockSizeToRows`), less percentage rows.
 use super::types::{GridItem, GridTrack};
 use crate::geometry::{AbstractAxis, Size};
 use crate::style::{TableRow, TableRows};
@@ -25,6 +25,10 @@ struct Row {
     constrained: bool,
     /// A cell spanning more than one row starts in it.
     rowspan_start: bool,
+    /// The lowest first baseline of its cells aligned by the row's baseline, from its top.
+    ascent: Option<f32>,
+    /// How far the deepest of those of span 1 reaches below its baseline.
+    descent: f32,
 }
 
 /// A cell spanning more than one row.
@@ -62,7 +66,8 @@ impl Rowspan {
 /// from their fixed sizing functions), `other_axis_tracks` the columns, already sized.
 /// `negative_implicit` is the number of row tracks before the first grid line. `table_height`
 /// is the table's content-box height to share between its rows, when [`TableRows::sized`] and
-/// the table has a definite height.
+/// the table has a definite height. When `height_holds_captions` it is its wrapper's, a height its
+/// parent handed it, and its captions are taken out of it first.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     tree: &mut Tree,
@@ -73,6 +78,7 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     inner_node_size: Size<Option<f32>>,
     negative_implicit: usize,
     table_height: Option<f32>,
+    height_holds_captions: bool,
 ) {
     // Fixed sizing functions: a row's `height`, and the gutters.
     for track in axis_tracks.iter_mut() {
@@ -98,6 +104,8 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
                 size: track.base_size,
                 constrained: !kind(k).caption && is_length(track.min_track_sizing_function.0),
                 rowspan_start: false,
+                ascent: None,
+                descent: 0.0,
             }
         })
         .collect();
@@ -132,6 +140,18 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
         if start >= count {
             continue;
         }
+        // A cell aligned by its row's baseline lines up in its first row: the row is at least as
+        // tall as the lowest baseline plus the deepest extent below it of a cell of span 1 (Blink's
+        // `RowBaselineTabulator`; a spanning cell's extent is its rows' to share, as its height is).
+        if item.table_row_baseline && !kind(start).caption {
+            if let Some((ascent, descent)) = item.table_row_baseline_extent(tree, grid_area_size) {
+                let row = &mut rows[start];
+                row.ascent = Some(row.ascent.map_or(ascent, |a| f32_max(a, ascent)));
+                if span == 1 {
+                    row.descent = f32_max(row.descent, descent);
+                }
+            }
+        }
         if span == 1 {
             let row = &mut rows[start];
             row.size = f32_max(row.size, size);
@@ -142,6 +162,12 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
             let span = span.min(count - start);
             rows[start].rowspan_start = true;
             rowspans.push(Rowspan { start, span, size });
+        }
+    }
+
+    for row in rows.iter_mut() {
+        if let Some(ascent) = row.ascent {
+            row.size = f32_max(row.size, ascent + row.descent);
         }
     }
 
@@ -187,7 +213,14 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
         let between: f32 =
             sections.iter().skip(1).map(|(ids, _, _)| gap(ids[0].saturating_sub(1), axis_tracks)).sum::<f32>();
         let least: f32 = sections.iter().map(|s| s.1).sum();
-        let extra = height - between - least;
+        // A caption is outside the table box: a height handed to the table's wrapper holds them
+        // (no gutter separates them from the rows), its own `height` does not.
+        let captions: f32 = if height_holds_captions {
+            (0..count).filter(|&k| kind(k).caption).map(|k| rows[k].size).sum()
+        } else {
+            0.0
+        };
+        let extra = height - captions - between - least;
         if extra > 0.0 && !sections.is_empty() {
             let any_body = sections.iter().any(|s| s.2);
             let grow: Vec<usize> = (0..sections.len()).filter(|&i| !any_body || sections[i].2).collect();

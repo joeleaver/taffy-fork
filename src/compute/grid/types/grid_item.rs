@@ -56,6 +56,8 @@ pub(in super::super) struct GridItem {
     pub justify_self: AlignSelf,
     /// Whether a stretched width passes the item's max width ([`GridItemStyle::stretch_past_max_width`])
     pub stretch_past_max_width: bool,
+    /// RINCH: whether it is a table cell aligned by its row's baseline ([`GridItemStyle::table_row_baseline`])
+    pub table_row_baseline: bool,
     /// The items first baseline (horizontal)
     pub baseline: Option<f32>,
     /// Shim for baseline alignment that acts like an extra top margin
@@ -123,6 +125,7 @@ impl GridItem {
             align_self: style.align_self().unwrap_or(parent_align_items),
             justify_self: style.justify_self().unwrap_or(parent_justify_items),
             stretch_past_max_width: style.stretch_past_max_width(),
+            table_row_baseline: style.table_row_baseline(),
             baseline: None,
             baseline_shim: 0.0,
             row_indexes: Line { start: 0, end: 0 }, // Properly initialised later
@@ -561,6 +564,54 @@ impl GridItem {
             self.min_content_contribution_cache.set(axis, Some(size));
             size
         })
+    }
+
+    /// RINCH: for a table cell aligned by its row's baseline ([`GridItemStyle::table_row_baseline`]),
+    /// its first baseline from the top of its grid area and how far its margin box reaches below
+    /// that baseline, as it lays out in its column with no height (Blink's
+    /// `RowBaselineTabulator`). `None` for a cell with nothing in it, which takes no part.
+    ///
+    /// A cell (stretched in its row) is measured from its content: its `min_size` (a cell's
+    /// `height`) is a minimum on the row, not a size that moves its baseline or deepens it
+    /// (Chrome 156: a `height: 40px` cell of 55px of content). With no line its baseline is the
+    /// bottom of its content box. A box that is not stretched stands in an anonymous cell, whose
+    /// content is its margin box: its own size counts, and with no line its baseline is its
+    /// bottom margin edge.
+    pub fn table_row_baseline_extent(
+        &self,
+        tree: &mut impl LayoutPartialTree,
+        grid_area_size: Size<Option<f32>>,
+    ) -> Option<(f32, f32)> {
+        let cell = self.align_self == AlignSelf::STRETCH;
+        let mut known_dimensions = self.known_dimensions(tree, grid_area_size);
+        known_dimensions.height = None;
+        let available_space =
+            Size { width: known_dimensions.width.or(grid_area_size.width).into(), height: AvailableSpace::MaxContent };
+        let output = tree.perform_child_layout(
+            self.node,
+            known_dimensions,
+            grid_area_size,
+            available_space,
+            if cell { SizingMode::ContentSize } else { SizingMode::InherentSize },
+            Line::FALSE,
+        );
+        let width = grid_area_size.width;
+        let margin_top = self.margin.top.resolve_or_zero(width, |val, basis| tree.calc(val, basis));
+        let margin_bottom = self.margin.bottom.resolve_or_zero(width, |val, basis| tree.calc(val, basis));
+        let height = output.size.height;
+        let baseline = match output.baselines.first {
+            Some(baseline) => baseline,
+            None if tree.child_count(self.node) == 0 => return None,
+            None if cell => {
+                let inset = |p: LengthPercentage, b: LengthPercentage| {
+                    p.resolve_or_zero(width, |val, basis| tree.calc(val, basis))
+                        + b.resolve_or_zero(width, |val, basis| tree.calc(val, basis))
+                };
+                height - inset(self.padding.bottom, self.border.bottom)
+            }
+            None => height + margin_bottom,
+        };
+        Some((margin_top + baseline, height + margin_bottom - baseline))
     }
 
     /// Compute the item's max content contribution from the provided parameters
