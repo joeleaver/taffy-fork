@@ -53,6 +53,12 @@ struct FlexItem {
     /// RINCH: `FlexboxItemStyle::resolves_own_width` of this item: an automatic-layout table,
     /// never narrower than its columns' minimum (rinch #2328)
     resolves_own_width: bool,
+    /// RINCH: whether its main size, as it stands, is imposed from outside it (measured from its
+    /// content or flexed) rather than resolved from its own `height`, min or max height or flex
+    /// basis ([`LayoutInput::known_height_is_outer`], read by a table in a column, rinch #2596)
+    main_is_outer: bool,
+    /// RINCH: the same for its cross size (a table in a row: stretched or measured)
+    cross_is_outer: bool,
     /// The cross-alignment of this item
     align_self: AlignSelf,
 
@@ -800,6 +806,8 @@ fn generate_anonymous_flex_items(
                 aspect_ratio,
                 ratio_height_is_content_floor: child_style.ratio_height_is_content_floor(),
                 resolves_own_width: child_style.resolves_own_width(),
+                main_is_outer: false,
+                cross_is_outer: false,
 
                 inset: child_style
                     .inset()
@@ -1227,6 +1235,13 @@ fn determine_flex_base_size(
 
         child.hypothetical_inner_size.set_main(constants.dir, hypothetical_inner_size);
         child.hypothetical_outer_size.set_main(constants.dir, hypothetical_outer_size);
+        // RINCH: imposed from outside when measured from the content, or raised to its automatic
+        // minimum (its content); not when it is its own basis or size, or held by its own min or max.
+        child.main_is_outer = if hypothetical_inner_size == child.flex_basis {
+            !child.flex_basis_is_definite
+        } else {
+            child.min_size.main(constants.dir).is_none() && hypothetical_inner_size == hypothetical_inner_min_main
+        };
     }
 }
 
@@ -2012,6 +2027,14 @@ fn resolve_flexible_lengths(line: &mut FlexLine, constants: &AlgoConstants) {
             let max_main = child.max_size.main(constants.dir);
             let clamped = child.target_size.main(constants.dir).maybe_clamp(resolved_min_main, max_main).max(0.0);
             child.violation = clamped - child.target_size.main(constants.dir);
+            // RINCH: a flexed size is imposed from outside, unless the item's own min or max
+            // size holds it (its automatic minimum is its content's). One flexing left at its
+            // hypothetical size keeps that size's provenance.
+            if child.violation != 0.0 {
+                child.main_is_outer = child.violation > 0.0 && child.min_size.main(constants.dir).is_none();
+            } else if clamped != child.hypothetical_inner_size.main(constants.dir) {
+                child.main_is_outer = true;
+            }
             child.target_size.set_main(constants.dir, clamped);
             child.outer_target_size.set_main(
                 constants.dir,
@@ -2106,6 +2129,9 @@ fn determine_hypothetical_cross_size(
             && child.aspect_ratio.is_some()
             && child.preferred_size.height.is_none();
         let child_cross = if ratio_cross_is_floor { None } else { child_cross };
+        // RINCH: measured from the content is imposed from outside, unless its min or max then
+        // changed it ([`LayoutInput::known_height_is_outer`]).
+        let mut cross_is_outer = false;
         let child_inner_cross = child_cross.unwrap_or_else(|| {
             let measured = tree
                 .compute_child_layout(
@@ -2125,6 +2151,7 @@ fn determine_hypothetical_cross_size(
                             height: if constants.is_row { child_available_cross } else { child_known_main },
                         },
                         vertical_margins_are_collapsible: Line::FALSE,
+                        known_height_is_outer: false,
                     },
                 )
                 .size
@@ -2146,8 +2173,11 @@ fn determine_hypothetical_cross_size(
                 }
                 None => measured,
             };
-            measured.maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum)
+            let clamped = measured.maybe_clamp(transferred_min_cross, transferred_max_cross).max(padding_border_sum);
+            cross_is_outer = clamped == measured;
+            clamped
         });
+        child.cross_is_outer = cross_is_outer;
         // RINCH: a table in a column is never narrower than its columns' minimum, whatever its
         // `width` (Chrome 156, rinch #2328): the item lays out wider, and the line is as wide.
         let child_inner_cross = if !constants.is_row && child.resolves_own_width {
@@ -2234,6 +2264,7 @@ fn calculate_children_base_lines(
                         },
                     },
                     vertical_margins_are_collapsible: Line::FALSE,
+                    known_height_is_outer: false,
                 },
             );
 
@@ -2399,10 +2430,15 @@ fn determine_used_cross_size(
                         .maybe_resolve(constants.node_inner_size, |val, basis| tree.calc(val, basis))
                         .maybe_add(box_sizing_adjustment);
 
-                    (line_cross_size - child.margin.cross_axis_sum(constants.dir)).maybe_clamp(
+                    let stretched = line_cross_size - child.margin.cross_axis_sum(constants.dir);
+                    let clamped = stretched.maybe_clamp(
                         child.min_size.cross(constants.dir),
                         max_size_ignoring_aspect_ratio.cross(constants.dir),
-                    )
+                    );
+                    // RINCH: a stretch is imposed from outside, unless its own min or max held it
+                    // ([`LayoutInput::known_height_is_outer`], rinch #2596).
+                    child.cross_is_outer = clamped == stretched;
+                    clamped
                 } else {
                     child.hypothetical_inner_size.cross(constants.dir)
                 },
@@ -2728,6 +2764,7 @@ fn calculate_flex_item(
             parent_size: node_inner_size,
             available_space: container_size.map(|s| s.into()),
             vertical_margins_are_collapsible: Line::FALSE,
+            known_height_is_outer: if constants.is_row { item.cross_is_outer } else { item.main_is_outer },
         },
     );
     let LayoutOutput {
@@ -3089,7 +3126,7 @@ fn perform_absolute_layout_on_absolute_children(
         } else {
             container_width_less_margins
         };
-        let final_size = match (known_dimensions.width, known_dimensions.height) {
+        let unclamped_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
                 let measured_size = tree.measure_child_size_both(
@@ -3109,10 +3146,14 @@ fn perform_absolute_layout_on_absolute_children(
                 );
                 known_dimensions.unwrap_or(measured_size)
             }
-        }
-        .maybe_clamp(min_size, max_size);
+        };
+        let final_size = unclamped_size.maybe_clamp(min_size, max_size);
+        // RINCH: a height measured from the box, not resolved from its own sizes, is imposed from
+        // outside it ([`LayoutInput::known_height_is_outer`]; a table's wrapper, rinch #2596), unless
+        // its min or max height then changed it.
+        let height_is_outer = known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
 
-        let layout_output = tree.perform_child_layout(
+        let layout_output = tree.perform_child_layout_with_outer_height(
             child,
             final_size.map(Some),
             constants.node_inner_size,
@@ -3124,6 +3165,7 @@ fn perform_absolute_layout_on_absolute_children(
             },
             SizingMode::ContentSize,
             Line::FALSE,
+            height_is_outer,
         );
         // RINCH: an absolutely positioned table is never shorter than its rows, whatever height
         // its `height` gives it (Chrome 156, rinch #2358), nor narrower than its columns' minimum,

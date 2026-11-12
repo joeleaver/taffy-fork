@@ -164,3 +164,49 @@ fn a_row_grows_to_its_lowest_baseline_and_deepest_extent() {
     let b = baseline_cell(&mut tree, 1, 1, Leaf { h: 20.0, baseline: Some(16.0), top: 0.0 }, (2.0, 0.0), None);
     assert_eq!(baseline_rows(&mut tree, 1, &[a, b]), [59.0, 59.0]);
 }
+
+#[test]
+fn a_relayout_of_an_unchanged_baseline_table_measures_nothing() {
+    // rinch #2598 review: the baseline measure of a cell took its final
+    // layout's cache slot, so every compute of the table laid each cell out
+    // twice. Its own slot keeps both.
+    let mut tree: TaffyTree<Leaf> = TaffyTree::new();
+    let a = baseline_cell(&mut tree, 1, 1, Leaf { h: 20.0, baseline: Some(16.0), top: 0.0 }, (5.0, 30.0), None);
+    let b = baseline_cell(&mut tree, 1, 1, Leaf { h: 20.0, baseline: Some(16.0), top: 0.0 }, (20.0, 0.0), None);
+    let t = tree
+        .new_with_children(
+            Style {
+                display: Display::Grid,
+                grid_auto_flow: GridAutoFlow::Column,
+                table_rows: Some(TableRows { rows: vec![BODY], sized: true }),
+                ..Default::default()
+            },
+            &[a, b],
+        )
+        .unwrap();
+    let mut calls = 0;
+    let mut layout = |tree: &mut TaffyTree<Leaf>, width: f32, calls: &mut u32| {
+        tree.compute_layout_with_measure(
+            t,
+            Size { width: AvailableSpace::Definite(width), height: AvailableSpace::MaxContent },
+            |inputs, _, leaf, style| {
+                let Some(leaf) = leaf else { return taffy::LayoutOutput::HIDDEN };
+                *calls += 1;
+                let (h, baseline, top) = (leaf.h, leaf.baseline, leaf.top);
+                let mut out =
+                    taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size { width: 10.0, height: h });
+                out.baselines.first = baseline.map(|b| top + b);
+                out
+            },
+        )
+        .unwrap();
+    };
+    layout(&mut tree, 800.0, &mut calls);
+    assert!(calls > 0, "a positive control: the first layout measures");
+    assert_eq!(tree.unrounded_layout(a).size.height, 70.0);
+    calls = 0;
+    // Another width the table (as wide as its content) does not reach.
+    layout(&mut tree, 790.0, &mut calls);
+    assert_eq!(calls, 0, "a relayout that changes nothing measures nothing");
+    assert_eq!(tree.unrounded_layout(a).size.height, 70.0);
+}

@@ -732,8 +732,10 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     ///   body sections (in proportion to their heights, as their rows were before any spanning
     ///   cell grew them), and each section to its rows as above,
     ///   but with no rowspan step and with empty rows growing only when every non-empty one is
-    ///   constrained. A caption takes none of it. A height the parent hands the table (not its own `height`)
-    ///   holds its captions, which come out of it first. A table shorter than its rows (and captions)
+    ///   constrained. A caption takes none of it. A height the parent imposes on the table from outside
+    ///   ([`crate::LayoutInput::known_height_is_outer`]: a stretch, a flexed size, a measured one)
+    ///   holds its captions, which come out of it first, and the table's own min and max heights
+    ///   then hold what is left (its own `height`, min, max and flex basis are its table box's). A table shorter than its rows (and captions)
     ///   grows to them, unless its height was imposed by its parent.
     ///
     /// Percentage row heights are not modelled.

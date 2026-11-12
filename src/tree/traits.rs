@@ -198,6 +198,22 @@ pub trait LayoutPartialTree: TraversePartialTree {
 
     /// Compute the specified node's size or full layout given the specified constraints
     fn compute_child_layout(&mut self, node_id: NodeId, inputs: LayoutInput) -> LayoutOutput;
+
+    /// RINCH: the height and first baseline a table cell measured for its row's baseline with
+    /// `input` (`GridItem::table_row_baseline_extent`), if cached. That measure is a full layout
+    /// of the cell at no height, which its final layout replaces in the node's one final-layout
+    /// slot, so it is kept apart: a relayout of an unchanged table lays no cell out twice.
+    #[inline(always)]
+    fn table_baseline_cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<(f32, Option<f32>)> {
+        let _ = (node_id, input);
+        None
+    }
+
+    /// RINCH: keep what [`Self::table_baseline_cache_get`] returns.
+    #[inline(always)]
+    fn table_baseline_cache_store(&mut self, node_id: NodeId, input: &LayoutInput, value: (f32, Option<f32>)) {
+        let _ = (node_id, input, value);
+    }
 }
 
 /// Trait used by the `compute_cached_layout` method which allows cached layout results to be stored and retrieved.
@@ -353,6 +369,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 axis: axis.into(),
                 run_mode: RunMode::ComputeSize,
                 vertical_margins_are_collapsible,
+                known_height_is_outer: false,
             },
         )
         .size
@@ -382,6 +399,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 axis: RequestedAxis::Both,
                 run_mode: RunMode::ComputeSize,
                 vertical_margins_are_collapsible,
+                known_height_is_outer: false,
             },
         )
         .size
@@ -398,6 +416,31 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
         sizing_mode: SizingMode,
         vertical_margins_are_collapsible: Line<bool>,
     ) -> LayoutOutput {
+        self.perform_child_layout_with_outer_height(
+            node_id,
+            known_dimensions,
+            parent_size,
+            available_space,
+            sizing_mode,
+            vertical_margins_are_collapsible,
+            false,
+        )
+    }
+
+    /// RINCH: [`Self::perform_child_layout`], saying whether a known height was imposed from
+    /// outside the box ([`LayoutInput::known_height_is_outer`])
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn perform_child_layout_with_outer_height(
+        &mut self,
+        node_id: NodeId,
+        known_dimensions: Size<Option<f32>>,
+        parent_size: Size<Option<f32>>,
+        available_space: Size<AvailableSpace>,
+        sizing_mode: SizingMode,
+        vertical_margins_are_collapsible: Line<bool>,
+        known_height_is_outer: bool,
+    ) -> LayoutOutput {
         self.compute_child_layout(
             node_id,
             LayoutInput {
@@ -409,6 +452,7 @@ pub(crate) trait LayoutPartialTreeExt: LayoutPartialTree {
                 axis: RequestedAxis::Both,
                 run_mode: RunMode::PerformLayout,
                 vertical_margins_are_collapsible,
+                known_height_is_outer,
             },
         )
     }

@@ -283,6 +283,10 @@ pub(super) fn align_and_position_item(
     // Reapply aspect ratio after stretch and absolute position width adjustments
     let Size { width, height } = Size { width, height: inherent_size.height }.maybe_apply_aspect_ratio(aspect_ratio);
 
+    // RINCH: a height from the stretch below, or measured for an absolutely positioned box, is
+    // imposed from outside the box ([`LayoutInput::known_height_is_outer`]; a table's wrapper,
+    // rinch #2596). One from its own size or a sizing keyword is not.
+    let height_is_outer = height.is_none() && !matches!(keyword_height, Some(Some(_)));
     let height = height.or_else(|| {
         if position == Position::Absolute && !resolves_own_height {
             if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
@@ -345,7 +349,10 @@ pub(super) fn align_and_position_item(
     } else {
         max_size
     };
+    let unclamped_height = height;
     let Size { width, height } = Size { width, height }.maybe_clamp(min_size, max_size);
+    // A stretch its own min or max height held is not imposed from outside.
+    let height_is_outer = height_is_outer && height == unclamped_height;
 
     // RINCH: an absolutely positioned table is not sized by its insets but shrinks to fit the
     // room they leave (rinch #2403): a long paragraph in it wraps there.
@@ -383,13 +390,14 @@ pub(super) fn align_and_position_item(
         Size { width, height }
     };
 
-    let layout_output = tree.perform_child_layout(
+    let layout_output = tree.perform_child_layout_with_outer_height(
         node,
         size,
         grid_area_size.map(Option::Some),
         grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
         SizingMode::InherentSize,
         Line::FALSE,
+        height_is_outer,
     );
 
     // Resolve final size

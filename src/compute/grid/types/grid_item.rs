@@ -5,7 +5,7 @@ use crate::compute::grid::OriginZeroLine;
 use crate::geometry::AbstractAxis;
 use crate::geometry::{Line, Point, Rect, Size};
 use crate::style::{AlignItems, AlignSelf, AvailableSpace, Dimension, LengthPercentageAuto, Overflow};
-use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, NodeId, SizingMode};
+use crate::tree::{LayoutInput, LayoutPartialTree, LayoutPartialTreeExt, NodeId, RequestedAxis, RunMode, SizingMode};
 use crate::util::{MaybeMath, MaybeResolve, ResolveOrZero};
 use crate::{AlignItemsKeyword, BoxSizing, GridItemStyle, LengthPercentage};
 use core::ops::Range;
@@ -587,19 +587,32 @@ impl GridItem {
         known_dimensions.height = None;
         let available_space =
             Size { width: known_dimensions.width.or(grid_area_size.width).into(), height: AvailableSpace::MaxContent };
-        let output = tree.perform_child_layout(
-            self.node,
+        let input = LayoutInput {
+            run_mode: RunMode::PerformLayout,
+            sizing_mode: if cell { SizingMode::ContentSize } else { SizingMode::InherentSize },
+            axis: RequestedAxis::Both,
             known_dimensions,
-            grid_area_size,
+            known_dimensions_are_definite: Size { width: true, height: true },
+            parent_size: grid_area_size,
             available_space,
-            if cell { SizingMode::ContentSize } else { SizingMode::InherentSize },
-            Line::FALSE,
-        );
+            vertical_margins_are_collapsible: Line::FALSE,
+            known_height_is_outer: false,
+        };
+        // Kept apart from the cell's final layout, which this layout would otherwise evict on
+        // every compute of its table (rinch #2598 review: a nested table paid twice per level).
+        let (height, first_baseline) = match tree.table_baseline_cache_get(self.node, &input) {
+            Some(cached) => cached,
+            None => {
+                let output = tree.compute_child_layout(self.node, input);
+                let value = (output.size.height, output.baselines.first);
+                tree.table_baseline_cache_store(self.node, &input, value);
+                value
+            }
+        };
         let width = grid_area_size.width;
         let margin_top = self.margin.top.resolve_or_zero(width, |val, basis| tree.calc(val, basis));
         let margin_bottom = self.margin.bottom.resolve_or_zero(width, |val, basis| tree.calc(val, basis));
-        let height = output.size.height;
-        let baseline = match output.baselines.first {
+        let baseline = match first_baseline {
             Some(baseline) => baseline,
             None if tree.child_count(self.node) == 0 => return None,
             None if cell => {

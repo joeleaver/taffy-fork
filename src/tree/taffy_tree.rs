@@ -503,6 +503,16 @@ where
             None,
         )
     }
+
+    #[inline(always)]
+    fn table_baseline_cache_get(&mut self, node_id: NodeId, input: &LayoutInput) -> Option<(f32, Option<f32>)> {
+        self.taffy.nodes[node_id.into()].cache.get_table_baseline(input)
+    }
+
+    #[inline(always)]
+    fn table_baseline_cache_store(&mut self, node_id: NodeId, input: &LayoutInput, value: (f32, Option<f32>)) {
+        self.taffy.nodes[node_id.into()].cache.store_table_baseline(input, value)
+    }
 }
 
 impl<NodeContext, MeasureFunction> CacheTree for TaffyView<'_, NodeContext, MeasureFunction>
@@ -1096,6 +1106,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
                     parent_size: Size::NONE,
                     available_space,
                     vertical_margins_are_collapsible: crate::geometry::Line::FALSE,
+                    known_height_is_outer: false,
                 };
                 taffy_view.compute_child_layout(node, inputs, None).size
             })

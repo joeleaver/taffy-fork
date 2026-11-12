@@ -9,6 +9,7 @@ use crate::geometry::{AbstractAxis, Size};
 use crate::style::{TableRow, TableRows};
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt};
 use crate::util::sys::{f32_max, Vec};
+use crate::util::MaybeMath;
 use crate::CompactLength;
 
 /// A length, not `auto`, a percentage or a `calc()`: a `height` that constrains a row.
@@ -66,8 +67,9 @@ impl Rowspan {
 /// from their fixed sizing functions), `other_axis_tracks` the columns, already sized.
 /// `negative_implicit` is the number of row tracks before the first grid line. `table_height`
 /// is the table's content-box height to share between its rows, when [`TableRows::sized`] and
-/// the table has a definite height. When `height_holds_captions` it is its wrapper's, a height its
-/// parent handed it, and its captions are taken out of it first.
+/// the table has a definite height. With `wrapper_height` (the table's content-box min and max
+/// heights) it is its wrapper's, a height its parent handed it: its captions are taken out of it,
+/// and those limits clamp what is left.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     tree: &mut Tree,
@@ -78,7 +80,7 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
     inner_node_size: Size<Option<f32>>,
     negative_implicit: usize,
     table_height: Option<f32>,
-    height_holds_captions: bool,
+    wrapper_height: Option<(Option<f32>, Option<f32>)>,
 ) {
     // Fixed sizing functions: a row's `height`, and the gutters.
     for track in axis_tracks.iter_mut() {
@@ -226,13 +228,16 @@ pub(super) fn size_table_rows<Tree: LayoutPartialTree>(
             sections.iter().skip(1).map(|(ids, _, _)| gap(ids[0].saturating_sub(1), axis_tracks)).sum::<f32>();
         let least: f32 = sections.iter().map(|s| s.1).sum();
         // A caption is outside the table box: a height handed to the table's wrapper holds them
-        // (no gutter separates them from the rows), its own `height` does not.
-        let captions: f32 = if height_holds_captions {
-            (0..count).filter(|&k| kind(k).caption).map(|k| rows[k].size).sum()
-        } else {
-            0.0
+        // (no gutter separates them from the rows), and the table's own min and max heights apply
+        // to what is left; its own `height` holds none.
+        let height = match wrapper_height {
+            Some((min, max)) => {
+                let captions: f32 = (0..count).filter(|&k| kind(k).caption).map(|k| rows[k].size).sum();
+                (height - captions).maybe_clamp(min, max)
+            }
+            None => height,
         };
-        let extra = height - captions - between - least;
+        let extra = height - between - least;
         if extra > 0.0 && !sections.is_empty() {
             let any_body = sections.iter().any(|s| s.2);
             let grow: Vec<usize> = (0..sections.len()).filter(|&i| !any_body || sections[i].2).collect();

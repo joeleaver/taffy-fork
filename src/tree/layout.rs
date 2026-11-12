@@ -144,6 +144,12 @@ pub struct LayoutInput {
     pub available_space: Size<AvailableSpace>,
     /// Specific to CSS Block layout. Used for correctly computing margin collapsing. You probably want to set this to `Line::FALSE`.
     pub vertical_margins_are_collapsible: Line<bool>,
+    /// RINCH: the known height was imposed from outside the box (a stretched or flexed size, or one
+    /// the parent measured from the box), not resolved from its own `height`, min or max height or
+    /// flex basis. Only a table reads it ([`crate::Style::table_rows`]): such a height is its
+    /// wrapper's, captions included, while its own sizes are its table box's (CSS 2.2 §17.4).
+    /// Ignored when the height is not known. You probably want `false`.
+    pub known_height_is_outer: bool,
 }
 
 impl LayoutInput {
@@ -159,6 +165,7 @@ impl LayoutInput {
         sizing_mode: SizingMode::InherentSize,
         axis: RequestedAxis::Both,
         vertical_margins_are_collapsible: Line::FALSE,
+        known_height_is_outer: false,
     };
 }
 

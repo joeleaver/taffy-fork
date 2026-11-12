@@ -1343,6 +1343,7 @@ fn determine_content_based_container_width(
                             parent_size: Size::NONE,
                             available_space: Size { width: item_available_width, height: available_space.height },
                             vertical_margins_are_collapsible: Line::TRUE,
+                            known_height_is_outer: false,
                         },
                         Some(&mut ctx),
                     )
@@ -1562,6 +1563,7 @@ fn perform_final_layout_on_in_flow_children(
                         // A float establishes a new block formatting context: its margins do not
                         // collapse with the margins of its children
                         vertical_margins_are_collapsible: Line::FALSE,
+                        known_height_is_outer: false,
                     },
                 );
                 let margin_box = item_layout.size + item_non_auto_margin.sum_axes();
@@ -1837,6 +1839,7 @@ fn perform_final_layout_on_in_flow_children(
                 parent_size,
                 available_space: available_space.map_width(|_| AvailableSpace::Definite(stretch_width)),
                 vertical_margins_are_collapsible: if item.is_in_same_bfc { Line::TRUE } else { Line::FALSE },
+                known_height_is_outer: false,
             };
 
             #[cfg(feature = "float_layout")]
@@ -2352,7 +2355,10 @@ fn perform_absolute_layout_on_absolute_children(
         } else {
             area_width_less_margins
         };
-        let final_size = match (known_dimensions.width, known_dimensions.height) {
+        // RINCH: a height measured from the box, not resolved from its own sizes, is imposed from
+        // outside it ([`LayoutInput::known_height_is_outer`]; a table's wrapper, rinch #2596), unless
+        // its min or max height then changed it.
+        let unclamped_size = match (known_dimensions.width, known_dimensions.height) {
             (Some(width), Some(height)) => Size { width, height },
             _ => {
                 let measured_size = tree.measure_child_size_both(
@@ -2388,10 +2394,11 @@ fn perform_absolute_layout_on_absolute_children(
                     _ => size,
                 }
             }
-        }
-        .maybe_clamp(min_size, max_size);
+        };
+        let final_size = unclamped_size.maybe_clamp(min_size, max_size);
+        let height_is_outer = known_dimensions.height.is_none() && final_size.height == unclamped_size.height;
 
-        let layout_output = tree.perform_child_layout(
+        let layout_output = tree.perform_child_layout_with_outer_height(
             item.node_id,
             final_size.map(Some),
             area_size.map(Some),
@@ -2401,6 +2408,7 @@ fn perform_absolute_layout_on_absolute_children(
             },
             SizingMode::ContentSize,
             Line::FALSE,
+            height_is_outer,
         );
         // RINCH: an absolutely positioned table is never shorter than its rows, whatever height
         // its `height` gives it (Chrome 156, rinch #2358), nor narrower than its columns' minimum,

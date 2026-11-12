@@ -102,6 +102,8 @@ struct CacheKey {
     /// Whether each known dimension is definite. Normalized such that an axis
     /// without a known dimension is always `true`.
     known_dimensions_are_definite: Size<bool>,
+    /// RINCH: [`LayoutInput::known_height_is_outer`], `false` when the height is not known
+    known_height_is_outer: bool,
 }
 
 impl CacheKey {
@@ -147,6 +149,7 @@ impl From<&LayoutInput> for CacheKey {
             known_dimensions_are_definite: input
                 .known_dimensions_are_definite
                 .zip_map(input.known_dimensions, |is_definite, kd| is_definite || kd.is_none()),
+            known_height_is_outer: input.known_height_is_outer && input.known_dimensions.height.is_some(),
         }
     }
 }
@@ -173,6 +176,9 @@ pub struct Cache {
     recently_used_entries: u16,
     /// The next measure entry to consider replacing
     next_measure_entry: u8,
+    /// RINCH: a table cell's height and first baseline measured for its row's baseline
+    /// (`LayoutPartialTree::table_baseline_cache_get`)
+    table_baseline_entry: Option<CacheEntry<(f32, Option<f32>)>>,
     /// Tracks if all cache entries are empty
     is_empty: bool,
 }
@@ -191,8 +197,23 @@ impl Cache {
             measure_entries: [None; CACHE_SIZE],
             recently_used_entries: 0,
             next_measure_entry: 0,
+            table_baseline_entry: None,
             is_empty: true,
         }
+    }
+
+    /// RINCH: a table cell's cached baseline measure for `input`, if any
+    #[inline]
+    pub fn get_table_baseline(&self, input: &LayoutInput) -> Option<(f32, Option<f32>)> {
+        let key = CacheKey::from(input);
+        self.table_baseline_entry.filter(|entry| entry.key == key).map(|entry| entry.content)
+    }
+
+    /// RINCH: keep a table cell's baseline measure for `input`
+    #[inline]
+    pub fn store_table_baseline(&mut self, input: &LayoutInput, value: (f32, Option<f32>)) {
+        self.is_empty = false;
+        self.table_baseline_entry = Some(CacheEntry { key: CacheKey::from(input), content: value });
     }
 
     /// Try to retrieve a cached result from the cache
@@ -206,6 +227,7 @@ impl Cache {
                     let Some(entry) = entry else { continue };
                     if entry.key.kd_available_space == key.kd_available_space
                         && entry.key.known_dimensions_are_definite == key.known_dimensions_are_definite
+                        && entry.key.known_height_is_outer == key.known_height_is_outer
                         && (entry.key.x_axis_parent_size() == key.x_axis_parent_size())
                         && entry.key.size_is_valid_for(&key)
                     {
@@ -276,6 +298,7 @@ impl Cache {
         self.measure_entries = [None; CACHE_SIZE];
         self.recently_used_entries = 0;
         self.next_measure_entry = 0;
+        self.table_baseline_entry = None;
         ClearState::Cleared
     }
 
@@ -293,7 +316,9 @@ impl Cache {
 
     /// Returns true if all cache entries are None, else false
     pub fn is_empty(&self) -> bool {
-        self.final_layout_entry.is_none() && !self.measure_entries.iter().any(|entry| entry.is_some())
+        self.final_layout_entry.is_none()
+            && self.table_baseline_entry.is_none()
+            && !self.measure_entries.iter().any(|entry| entry.is_some())
     }
 }
 
@@ -321,6 +346,7 @@ mod tests {
             parent_size: Size::NONE,
             available_space: Size { width: AvailableSpace::MaxContent, height: AvailableSpace::MaxContent },
             vertical_margins_are_collapsible: Line::FALSE,
+            known_height_is_outer: false,
         }
     }
 
