@@ -325,6 +325,35 @@ pub fn compute_flexbox_layout(
         .known_dimensions_are_definite
         .zip_map(known_dimensions, |is_definite, known_dimension| is_definite || known_dimension.is_none());
 
+    // RINCH (#2392): a container whose width comes from its content (a float, a grid item
+    // aligned to its start, ...) sizes itself with its items' percentages behaving as `auto`
+    // (css-sizing-3 §5.2.1 "cyclic percentage contribution"), and then lays them out with those
+    // percentages resolved against that width, which is definite (css-sizing-3 §4.2: a size
+    // resolved by fit-content sizing against definite room). The items saw no width at all, so
+    // a `width: 50%` took its content's width. Size the width first, then lay out at it; only
+    // when something depends on it, and not for a question about the width alone. (Its flag
+    // above is already definite: the parent handed it no width.)
+    let mut styled_based_known_dimensions = styled_based_known_dimensions;
+    if styled_based_known_dimensions.width.is_none()
+        && !(run_mode == RunMode::ComputeSize && inputs.axis == RequestedAxis::Horizontal)
+        && percentages_resolve_against_width(tree, node)
+    {
+        let width = compute_preliminary(
+            tree,
+            node,
+            LayoutInput {
+                known_dimensions: styled_based_known_dimensions,
+                known_dimensions_are_definite,
+                run_mode: RunMode::ComputeSize,
+                axis: RequestedAxis::Horizontal,
+                ..inputs
+            },
+        )
+        .size
+        .width;
+        styled_based_known_dimensions.width = Some(width);
+    }
+
     let mut output = compute_preliminary(
         tree,
         node,
@@ -337,6 +366,34 @@ pub fn compute_flexbox_layout(
     }
 
     output
+}
+
+/// Whether laying out `node`'s in-flow items depends on its content-box width through a
+/// percentage the flex algorithm resolves itself: an item's width, min or max width, flex basis (a
+/// row's) or margin (any side resolves against the width, css-box-4 §3), or the container's own
+/// column gap. Not an item's percentage padding: the item resolves that against the size it is
+/// handed, and its cache, keyed without that size, answers the second layout with the first's
+/// (padding 0).
+fn percentages_resolve_against_width(tree: &impl LayoutFlexboxContainer, node: NodeId) -> bool {
+    let (is_row, gap) = {
+        let style = tree.get_flexbox_container_style(node);
+        (style.flex_direction().is_row(), style.gap().width)
+    };
+    if gap.into_raw().uses_percentage() {
+        return true;
+    }
+    tree.child_ids(node).any(|child| {
+        let style = tree.get_flexbox_child_style(child);
+        if style.position() == Position::Absolute || style.box_generation_mode() == BoxGenerationMode::None {
+            return false;
+        }
+        let margin = style.margin();
+        style.size().width.into_raw().uses_percentage()
+            || style.min_size().width.into_raw().uses_percentage()
+            || style.max_size().width.into_raw().uses_percentage()
+            || (is_row && style.flex_basis().into_raw().uses_percentage())
+            || [margin.left, margin.right, margin.top, margin.bottom].iter().any(|m| m.into_raw().uses_percentage())
+    })
 }
 
 /// Compute a preliminary size for an item

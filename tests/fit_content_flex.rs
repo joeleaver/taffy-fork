@@ -350,3 +350,64 @@ fn an_item_max_width_caps_the_max_content() {
     let floored = Style { min_size: Size { width: length(120.0), height: auto() }, ..capped };
     assert_eq!(layout_leaf_items(floated(row()), vec![floored, fixed]), 170.0);
 }
+
+/// Like [`layout`], also returning each item's border box width.
+fn layout_with_items(case: Case) -> ((f32, f32), Vec<f32>) {
+    let mut tree: TaffyTree<bool> = TaffyTree::new();
+    let mut items = Vec::new();
+    for item in case.items {
+        let leaf = tree.new_leaf_with_context(Style { display: Display::Block, ..Default::default() }, true).unwrap();
+        items.push(tree.new_with_children(item, &[leaf]).unwrap());
+    }
+    let container = tree.new_with_children(Style { margin: margins(), ..case.container }, &items).unwrap();
+    let mut parent_style = case.parent;
+    parent_style.size.width = length(300.0);
+    let parent = tree.new_with_children(parent_style, &[container]).unwrap();
+    tree.compute_layout_with_measure(parent, Size::MAX_CONTENT, |inputs, _, ctx, style| match ctx {
+        Some(true) => compute_leaf_layout(inputs, style, |_, _| 0.0, text),
+        _ => compute_leaf_layout(inputs, style, |_, _| 0.0, |_, _| Size::ZERO),
+    })
+    .unwrap();
+    let size = tree.layout(container).unwrap().size;
+    let widths = items.iter().map(|&i| tree.layout(i).unwrap().size.width).collect();
+    ((size.width, size.height), widths)
+}
+
+fn width_percent(p: f32) -> Style {
+    Style { size: Size { width: percent(p), height: auto() }, ..block() }
+}
+
+/// An item's percentage width resolves against the width the container
+/// sizes itself to (rinch #2392): the items' percentages behave as `auto`
+/// for that (the room, 260, as two plain items make it), then 30% and 70% of
+/// it are 78 and 182: 7 lines of text 78 wide, and 3. They resolved against nothing, so both
+/// items were 130 wide and 80 tall, as plain ones. Chrome 157 gives a float
+/// with `width: 50%` items "alpha beta" and "gamma delta" 88.44 each, half
+/// of the 176.88 they sum to (rinch-dom `fit_content_flex_tests.rs`).
+#[test]
+fn a_float_row_resolves_its_items_percentage_widths_against_its_width() {
+    let case = Case { parent: block(), container: floated(row()), items: vec![width_percent(0.3), width_percent(0.7)] };
+    assert_eq!(layout_with_items(case), ((260.0, 140.0), vec![78.0, 182.0]));
+}
+
+/// A percentage flex basis likewise, in a row whose width a start-aligned
+/// grid item's fit-content sizing sets: bases 78 and 182, the first raised to
+/// its automatic minimum, the text's 100 min-content, so the second shrinks to
+/// 160. (They were 130 and 130.)
+#[test]
+fn a_grid_items_row_resolves_its_items_percentage_bases_against_its_width() {
+    let basis = |p: f32| Style { flex_basis: percent(p), ..block() };
+    let parent = Style { display: Display::Grid, justify_items: Some(AlignItems::START), ..Default::default() };
+    let case = Case { parent, container: row(), items: vec![basis(0.3), basis(0.7)] };
+    assert_eq!(layout_with_items(case), ((260.0, 120.0), vec![100.0, 160.0]));
+}
+
+/// A column's item resolves its percentage width, its cross size, against
+/// the float's width: the max-content 520 does not fit the room, so 260;
+/// 30% of it is 78.
+#[test]
+fn a_float_column_resolves_an_items_percentage_width_against_its_width() {
+    let column = Style { flex_direction: FlexDirection::Column, ..floated(row()) };
+    let case = Case { parent: block(), container: column, items: vec![width_percent(0.3), block()] };
+    assert_eq!(layout_with_items(case).1, vec![78.0, 260.0]);
+}
