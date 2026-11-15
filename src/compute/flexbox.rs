@@ -950,7 +950,20 @@ fn determine_flex_base_size(
 
         // Parent size for child sizing
         let cross_axis_parent_size = constants.node_inner_size.cross(dir);
-        let child_parent_size = Size::from_cross(dir, cross_axis_parent_size);
+        // RINCH (#2700): a replaced item is measured with the container's main size too, when it
+        // is definite. Its own percentages are of that size (its `max-width: 100%` and its
+        // padding, which resolves against the container's width in either direction), and its
+        // measure answers its natural size through them, with its ratio: in a 317px row, Chrome
+        // 157 gives a `max-width: 100%; padding: 7%` picture a content box of 317 and does not
+        // shrink it below that (its automatic minimum size, css-flexbox-1 §4.5, is its
+        // min-content size clamped by its max main size). Left unset, the padding counted 0 and
+        // the measure compressed the picture to nothing. Any other item keeps an unset main axis,
+        // so that a percentage of it is not part of its intrinsic contributions.
+        let child_parent_size = if child_style.is_compressible_replaced() && constants.known_main_size_is_definite {
+            Size::from_cross(dir, cross_axis_parent_size).with_main(dir, constants.node_inner_size.main(dir))
+        } else {
+            Size::from_cross(dir, cross_axis_parent_size)
+        };
 
         // Available space for child sizing
         // Min/max sizes transferred through the aspect ratio are taken into account here

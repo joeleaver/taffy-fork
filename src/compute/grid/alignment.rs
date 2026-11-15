@@ -122,6 +122,9 @@ pub(super) fn align_and_position_item(
 
     let position = style.position();
     let stretch_past_max_width = style.stretch_past_max_width();
+    // RINCH: a replaced element's `normal` is `start` ([`GridItemStyle::normal_aligns_as_start`]),
+    // in flow only: an absolutely positioned item's `normal` is left as it was.
+    let normal_aligns_as_start = style.normal_aligns_as_start() && style.position() != Position::Absolute;
     let resolves_own_height = style.resolves_own_height();
     let resolves_own_width = style.resolves_own_width();
     let inset_horizontal = style
@@ -168,14 +171,18 @@ pub(super) fn align_and_position_item(
     // See: https://www.w3.org/TR/css-grid-1/#grid-item-sizing
     let alignment_styles = InBothAbsAxis {
         horizontal: justify_self.or(container_alignment_styles.horizontal).unwrap_or_else(|| {
-            if inherent_size.width.is_some() || size_style.width.is_sizing_keyword() {
+            if inherent_size.width.is_some() || size_style.width.is_sizing_keyword() || normal_aligns_as_start {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH
             }
         }),
         vertical: align_self.or(container_alignment_styles.vertical).unwrap_or_else(|| {
-            if inherent_size.height.is_some() || size_style.height.is_sizing_keyword() || aspect_ratio.is_some() {
+            if inherent_size.height.is_some()
+                || size_style.height.is_sizing_keyword()
+                || aspect_ratio.is_some()
+                || normal_aligns_as_start
+            {
                 AlignSelf::START
             } else {
                 AlignSelf::STRETCH

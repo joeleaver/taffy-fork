@@ -318,6 +318,12 @@ pub trait GridItemStyle: CoreStyle {
     fn stretch_past_max_width(&self) -> bool {
         Style::<Self::CustomIdent>::DEFAULT.stretch_past_max_width
     }
+    /// RINCH: whether the item's `normal` self-alignment behaves as `start` in both axes, as a
+    /// replaced element's does ([`crate::Style::normal_aligns_as_start`])
+    #[inline(always)]
+    fn normal_aligns_as_start(&self) -> bool {
+        Style::<Self::CustomIdent>::DEFAULT.normal_aligns_as_start
+    }
     /// RINCH: whether the item is a table cell aligned by its row's baseline
     /// ([`crate::Style::table_row_baseline`])
     #[inline(always)]
