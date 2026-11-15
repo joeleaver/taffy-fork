@@ -753,6 +753,14 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
     /// `SetupTableCellConstraintSpaceBuilder`). Grid items proper are clamped (css-grid-1 §6.2).
     #[cfg(feature = "grid")]
     pub stretch_past_max_width: bool,
+    /// RINCH: a grid item whose `normal` self-alignment (no `justify-self`/`align-self` of its
+    /// own and no `justify-items`/`align-items` on its container) behaves as `start` in both
+    /// axes rather than `stretch`: a replaced element, which keeps its natural size in its grid
+    /// area (css-align-3 §6.1, css-grid-1 §6.2; Chrome 157 lays an `<img>` or `<canvas>` out at
+    /// its natural size in a taller and wider area). A form control that is not one (an
+    /// `<input>`) still stretches, so this is not [`Self::item_is_replaced`].
+    #[cfg(feature = "grid")]
+    pub normal_aligns_as_start: bool,
     /// RINCH: a CSS table cell aligned by its row's baseline (`vertical-align: baseline`), in a
     /// grid with [`Self::table_rows`]. Its row is at least as tall as the lowest first baseline of
     /// such cells plus the deepest extent of a span-1 one below its own baseline (Blink's
@@ -888,6 +896,8 @@ impl<S: CheapCloneStr> Style<S> {
         justify_self: None,
         #[cfg(feature = "grid")]
         stretch_past_max_width: false,
+        #[cfg(feature = "grid")]
+        normal_aligns_as_start: false,
         #[cfg(feature = "grid")]
         table_row_baseline: false,
         #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]
@@ -1590,6 +1600,10 @@ impl<S: CheapCloneStr> GridItemStyle for Style<S> {
         self.stretch_past_max_width
     }
     #[inline(always)]
+    fn normal_aligns_as_start(&self) -> bool {
+        self.normal_aligns_as_start
+    }
+    #[inline(always)]
     fn table_row_baseline(&self) -> bool {
         self.table_row_baseline
     }
@@ -1624,6 +1638,10 @@ impl<T: GridItemStyle> GridItemStyle for &'_ T {
     #[inline(always)]
     fn stretch_past_max_width(&self) -> bool {
         (*self).stretch_past_max_width()
+    }
+    #[inline(always)]
+    fn normal_aligns_as_start(&self) -> bool {
+        (*self).normal_aligns_as_start()
     }
     #[inline(always)]
     fn table_row_baseline(&self) -> bool {
@@ -1689,6 +1707,8 @@ mod tests {
             justify_self: Default::default(),
             #[cfg(feature = "grid")]
             stretch_past_max_width: false,
+            #[cfg(feature = "grid")]
+            normal_aligns_as_start: false,
             #[cfg(feature = "grid")]
             table_row_baseline: false,
             #[cfg(any(feature = "flexbox", feature = "grid", feature = "block_layout"))]

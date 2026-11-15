@@ -103,10 +103,13 @@ impl GridItem {
         col_span: Line<OriginZeroLine>,
         row_span: Line<OriginZeroLine>,
         style: S,
-        parent_align_items: AlignItems,
-        parent_justify_items: AlignItems,
+        parent_align_items: Option<AlignItems>,
+        parent_justify_items: Option<AlignItems>,
         source_order: u16,
     ) -> Self {
+        // RINCH: `normal` (set on neither the item nor its container) is `stretch`, or `start`
+        // for a replaced element ([`GridItemStyle::normal_aligns_as_start`]).
+        let normal = if style.normal_aligns_as_start() { AlignSelf::START } else { AlignSelf::STRETCH };
         GridItem {
             node,
             source_order,
@@ -122,8 +125,8 @@ impl GridItem {
             padding: style.padding(),
             border: style.border(),
             margin: style.margin(),
-            align_self: style.align_self().unwrap_or(parent_align_items),
-            justify_self: style.justify_self().unwrap_or(parent_justify_items),
+            align_self: style.align_self().or(parent_align_items).unwrap_or(normal),
+            justify_self: style.justify_self().or(parent_justify_items).unwrap_or(normal),
             stretch_past_max_width: style.stretch_past_max_width(),
             table_row_baseline: style.table_row_baseline(),
             baseline: None,
