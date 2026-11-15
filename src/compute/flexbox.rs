@@ -958,8 +958,30 @@ fn determine_flex_base_size(
         // shrink it below that (its automatic minimum size, css-flexbox-1 §4.5, is its
         // min-content size clamped by its max main size). Left unset, the padding counted 0 and
         // the measure compressed the picture to nothing. Any other item keeps an unset main axis,
-        // so that a percentage of it is not part of its intrinsic contributions.
-        let child_parent_size = if child_style.is_compressible_replaced() && constants.known_main_size_is_definite {
+        // so that a percentage of it is not part of its intrinsic contributions, and so does a
+        // replaced item none of whose sizes, padding or border is a percentage: the main size is
+        // in the measure cache's key, and a picture of length sizes would be measured again for
+        // nothing whenever its row's width changed.
+        let percent_of_parent = child_style.is_compressible_replaced() && constants.known_main_size_is_definite && {
+            let percent = |v: crate::CompactLength| v.uses_percentage() || v.is_calc();
+            let (padding, border) = (child_style.padding(), child_style.border());
+            let (size, min, max) = (child_style.size(), child_style.min_size(), child_style.max_size());
+            [
+                padding.left,
+                padding.right,
+                padding.top,
+                padding.bottom,
+                border.left,
+                border.right,
+                border.top,
+                border.bottom,
+            ]
+            .into_iter()
+            .any(|v| percent(v.into_raw()))
+                || [size.width, size.height].into_iter().any(|v| percent(v.into_raw()))
+                || [min.width, min.height, max.width, max.height].into_iter().any(|v| percent(v.into_raw()))
+        };
+        let child_parent_size = if percent_of_parent {
             Size::from_cross(dir, cross_axis_parent_size).with_main(dir, constants.node_inner_size.main(dir))
         } else {
             Size::from_cross(dir, cross_axis_parent_size)
