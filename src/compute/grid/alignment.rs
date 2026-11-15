@@ -195,23 +195,42 @@ pub(super) fn align_and_position_item(
         height: grid_area_size.height.maybe_sub(margin.top).maybe_sub(margin.bottom) - baseline_shim,
     };
 
+    // RINCH: the room an absolutely positioned box is sized in is its grid area (its containing
+    // block, css-grid-1 §9.1) less its margins **and its insets**, a missing inset counting as
+    // zero (CSS 2.1 §10.3.7; rinch #2377). An `auto` width shrinks to fit in it, and a `stretch` or
+    // `fit-content` width resolves against it. Chrome 153: `grid-column: 2; left: 5px` with
+    // `margin: 0 17px 0 23px` in a 308px area wraps its text at 263, not at 268. An in-flow item has
+    // no insets (they offset it after layout), so it keeps the area less its margins.
+    let item_room = if position == Position::Absolute {
+        Size {
+            width: f32_max(
+                grid_area_minus_item_margins_size.width
+                    - inset_horizontal.start.unwrap_or(0.0)
+                    - inset_horizontal.end.unwrap_or(0.0),
+                0.0,
+            ),
+            height: f32_max(
+                grid_area_minus_item_margins_size.height
+                    - inset_vertical.start.unwrap_or(0.0)
+                    - inset_vertical.end.unwrap_or(0.0),
+                0.0,
+            ),
+        }
+    } else {
+        grid_area_minus_item_margins_size
+    };
+
     // A size that is a sizing keyword (min-content, max-content, fit-content,
     // fit-content(...), stretch) either resolves to an exact size or is resolved
     // by measuring the item under the corresponding available space constraint
-    let keyword_width = inherent_size.width.is_none().then(|| {
-        resolve_sizing_keyword(
-            size_style.width,
-            Some(grid_area_minus_item_margins_size.width),
-            Some(grid_area_size.width),
-        )
-    });
-    let keyword_height = inherent_size.height.is_none().then(|| {
-        resolve_sizing_keyword(
-            size_style.height,
-            Some(grid_area_minus_item_margins_size.height),
-            Some(grid_area_size.height),
-        )
-    });
+    let keyword_width = inherent_size
+        .width
+        .is_none()
+        .then(|| resolve_sizing_keyword(size_style.width, Some(item_room.width), Some(grid_area_size.width)));
+    let keyword_height = inherent_size
+        .height
+        .is_none()
+        .then(|| resolve_sizing_keyword(size_style.height, Some(item_room.height), Some(grid_area_size.height)));
 
     // If both axes need to be measured then resolve them with a single measure call
     let keyword_measured_size: Size<Option<f32>> = match (&keyword_width, &keyword_height) {
@@ -240,8 +259,8 @@ pub(super) fn align_and_position_item(
         // positioned element being set
         // RINCH: not a table, which its insets place only (rinch #2403).
         if position == Position::Absolute && !resolves_own_height {
-            if let (Some(left), Some(right)) = (inset_horizontal.start, inset_horizontal.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.width - left - right, 0.0));
+            if let (Some(_), Some(_)) = (inset_horizontal.start, inset_horizontal.end) {
+                return Some(item_room.width);
             }
         }
 
@@ -253,10 +272,7 @@ pub(super) fn align_and_position_item(
                         node,
                         Size::NONE,
                         grid_area_size.map(Option::Some),
-                        Size {
-                            width: available_width,
-                            height: AvailableSpace::Definite(grid_area_minus_item_margins_size.height),
-                        },
+                        Size { width: available_width, height: AvailableSpace::Definite(item_room.height) },
                         SizingMode::InherentSize,
                         AbsoluteAxis::Horizontal,
                         Line::FALSE,
@@ -289,8 +305,8 @@ pub(super) fn align_and_position_item(
     let height_is_outer = resolves_own_height && height.is_none() && !matches!(keyword_height, Some(Some(_)));
     let height = height.or_else(|| {
         if position == Position::Absolute && !resolves_own_height {
-            if let (Some(top), Some(bottom)) = (inset_vertical.start, inset_vertical.end) {
-                return Some(f32_max(grid_area_minus_item_margins_size.height - top - bottom, 0.0));
+            if let (Some(_), Some(_)) = (inset_vertical.start, inset_vertical.end) {
+                return Some(item_room.height);
             }
         }
 
@@ -306,7 +322,7 @@ pub(super) fn align_and_position_item(
                             Size {
                                 width: width
                                     .map(AvailableSpace::Definite)
-                                    .unwrap_or(AvailableSpace::Definite(grid_area_minus_item_margins_size.width)),
+                                    .unwrap_or(AvailableSpace::Definite(item_room.width)),
                                 height: available_height,
                             },
                             SizingMode::InherentSize,
@@ -355,34 +371,15 @@ pub(super) fn align_and_position_item(
     // stretch after its captions (Chrome 156, rinch #2596).
     let height = if height_is_outer { unclamped_height } else { height };
 
-    // RINCH: an absolutely positioned table is not sized by its insets but shrinks to fit the
-    // room they leave (rinch #2403): a long paragraph in it wraps there.
-    let grid_area_minus_item_margins_size = if position == Position::Absolute && resolves_own_height {
-        Size {
-            width: f32_max(
-                grid_area_minus_item_margins_size.width
-                    - inset_horizontal.start.unwrap_or(0.0)
-                    - inset_horizontal.end.unwrap_or(0.0),
-                0.0,
-            ),
-            height: f32_max(
-                grid_area_minus_item_margins_size.height
-                    - inset_vertical.start.unwrap_or(0.0)
-                    - inset_vertical.end.unwrap_or(0.0),
-                0.0,
-            ),
-        }
-    } else {
-        grid_area_minus_item_margins_size
-    };
-
+    // An absolutely positioned box (a table too, which its insets place only, rinch #2403) is
+    // measured and laid out in the room its insets and margins leave in its area.
     // Layout node
     let size = if position == Position::Absolute && (width.is_none() || height.is_none()) {
         tree.measure_child_size_both(
             node,
             Size { width, height },
             grid_area_size.map(Option::Some),
-            grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+            item_room.map(AvailableSpace::Definite),
             SizingMode::InherentSize,
             Line::FALSE,
         )
@@ -395,7 +392,7 @@ pub(super) fn align_and_position_item(
         node,
         size,
         grid_area_size.map(Option::Some),
-        grid_area_minus_item_margins_size.map(AvailableSpace::Definite),
+        item_room.map(AvailableSpace::Definite),
         SizingMode::InherentSize,
         Line::FALSE,
         height_is_outer,
