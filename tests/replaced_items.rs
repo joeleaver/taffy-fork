@@ -136,6 +136,15 @@ fn a_replaced_flex_item_is_measured_with_the_rows_width() {
     let (size, parents) = lay_out(row.clone(), item(true));
     near(size, Size { width: 261.625, height: 153.0 });
     assert!(parents.iter().all(|p| *p == Some(317.0)), "{parents:?}");
+    // A replaced item with no percentage is measured with no main size too:
+    // nothing of it depends on the row's width, which is in the cache key.
+    let lengths = Style {
+        padding: Rect { left: length(7.0), right: length(7.0), top: length(7.0), bottom: length(7.0) },
+        item_is_replaced: true,
+        ..Default::default()
+    };
+    let (_, parents) = lay_out(row.clone(), lengths);
+    assert!(parents.contains(&None), "{parents:?}");
     // Any other item still is measured with no main size, as upstream (and
     // its padding counts 0 there: 306 wide).
     let (size, parents) = lay_out(row, item(false));
