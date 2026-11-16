@@ -104,8 +104,7 @@ impl<S: CheapCloneStr> NamedLineResolverAxis<'_, S> {
     fn resolve_line_names(&self, line: &Line<GridPlacement<S>>) -> Line<NonNamedGridPlacement> {
         let start_holder;
         let start_line_resolved = if let GridPlacement::NamedLine(name, idx) = &line.start {
-            start_holder =
-                GridPlacement::Line(self.find_line_index(name, *idx as i32, GridAreaEnd::Start, &|lines| lines));
+            start_holder = GridPlacement::Line(self.find_line_index(name, *idx as i32, GridAreaEnd::Start));
             &start_holder
         } else {
             &line.start
@@ -113,7 +112,7 @@ impl<S: CheapCloneStr> NamedLineResolverAxis<'_, S> {
 
         let end_holder;
         let end_line_resolved = if let GridPlacement::NamedLine(name, idx) = &line.end {
-            end_holder = GridPlacement::Line(self.find_line_index(name, *idx as i32, GridAreaEnd::End, &|lines| lines));
+            end_holder = GridPlacement::Line(self.find_line_index(name, *idx as i32, GridAreaEnd::End));
             &end_holder
         } else {
             &line.end
@@ -127,28 +126,15 @@ impl<S: CheapCloneStr> NamedLineResolverAxis<'_, S> {
         //
         // <https://drafts.csswg.org/css-grid-2/#grid-span>
         match (&start_line_resolved, &end_line_resolved) {
+            // `<line> / span <name> N`: the Nth line with the name after the start line
             (GridPlacement::Line(start_line), GridPlacement::NamedSpan(name, idx)) => {
-                let normalized_start_line = if start_line.as_i16() > 0 {
-                    start_line.as_i16() as u32
-                } else {
-                    (self.explicit_track_count as i32 + 1 + start_line.as_i16() as i32).max(0) as u32
-                };
-                let end_line = self.find_line_index(name, *idx as i32, GridAreaEnd::End, &|lines| {
-                    let point = lines.partition_point(|line| *line <= normalized_start_line);
-                    &lines[point..]
-                });
+                let end_line = self.find_span_line(name, *idx, GridAreaEnd::End, *start_line);
                 Line { start: NonNamedGridPlacement::Line(*start_line), end: NonNamedGridPlacement::Line(end_line) }
             }
+            // `span <name> N / <line>`: the Nth line with the name before the end line, counting
+            // back from it (the nearest is the first)
             (GridPlacement::NamedSpan(name, idx), GridPlacement::Line(end_line)) => {
-                let normalized_end_line = if end_line.as_i16() > 0 {
-                    end_line.as_i16() as u32
-                } else {
-                    (self.explicit_track_count as i32 + 1 + end_line.as_i16() as i32).max(0) as u32
-                };
-                let start_line = self.find_line_index(name, *idx as i32, GridAreaEnd::Start, &|lines| {
-                    let point = lines.partition_point(|line| *line < normalized_end_line);
-                    &lines[..point]
-                });
+                let start_line = self.find_span_line(name, *idx, GridAreaEnd::Start, *end_line);
                 Line { start: NonNamedGridPlacement::Line(start_line), end: NonNamedGridPlacement::Line(*end_line) }
             }
             (start, end) => Line {
@@ -170,69 +156,98 @@ impl<S: CheapCloneStr> NamedLineResolverAxis<'_, S> {
         }
     }
 
-    /// Resolve the grid line for a named grid line or span
-    fn find_line_index(
-        &self,
-        name: &S,
-        idx: i32,
-        end: GridAreaEnd,
-        filter_lines: &dyn Fn(&[u32]) -> &[u32],
-    ) -> GridLine {
+    /// The sorted one-indexed lines that carry the passed name: the lines named so, or failing
+    /// that the implicit `<name>-start` / `<name>-end` lines of an area. Empty if neither exists.
+    fn lines_named(&self, name: &S, end: GridAreaEnd) -> &[u32] {
         let name = name.as_ref();
-        let mut idx = idx;
-        let explicit_track_count = self.explicit_track_count as i32;
-
-        // An index of 0 is used to represent "no index specified".
-        if idx == 0 {
-            idx = 1;
-        }
-
-        fn get_line(lines: &[u32], explicit_track_count: i32, idx: i32) -> i16 {
-            let abs_idx = idx.unsigned_abs() as usize;
-            let line = if abs_idx <= lines.len() {
-                if idx > 0 {
-                    lines[abs_idx - 1] as i64
-                } else {
-                    lines[lines.len() - abs_idx] as i64
-                }
-            } else {
-                let remaining_lines = (abs_idx - lines.len()) as i64 * idx.signum() as i64;
-                if idx > 0 {
-                    explicit_track_count as i64 + 1 + remaining_lines
-                } else {
-                    -(explicit_track_count as i64 + 1 + remaining_lines)
-                }
-            };
-            line.clamp(i16::MIN as i64, i16::MAX as i64) as i16
-        }
-
-        // Lookup lines
         if let Some(lines) = self.lines.get(name) {
-            return GridLine::from(get_line(filter_lines(lines), explicit_track_count, idx));
+            return lines;
         }
-
         // TODO: eliminate string allocations
         let implicit_name = match end {
             GridAreaEnd::Start => format!("{name}-start"),
             GridAreaEnd::End => format!("{name}-end"),
         };
-        if let Some(lines) = self.lines.get(&*implicit_name) {
-            return GridLine::from(get_line(filter_lines(lines), explicit_track_count, idx));
-        }
+        self.lines.get(&*implicit_name).map(|lines| &lines[..]).unwrap_or(&[])
+    }
 
-        // The CSS Grid specification has a weird quirk where it matches non-existent line names
-        // to the first (positive) implicit line in the grid
-        //
-        // We add/subtract 2 to the explicit track count because (in each axis) a grid has one more explicit
-        // grid line than it has tracks. And the fallback line is the line *after* that.
-        //
-        // See: <https://github.com/w3c/csswg-drafts/issues/966#issuecomment-277042153>
-        let line = if idx > 0 {
-            explicit_track_count as i64 + 1 + idx as i64
+    /// The position of a grid line counted from the first explicit line (`1`), so that the
+    /// implicit lines before the explicit grid are `0`, `-1`, ...
+    fn line_position(&self, line: GridLine) -> i64 {
+        let line = line.as_i16() as i64;
+        if line < 0 {
+            // `-1` is the last explicit line, `explicit_track_count + 1`
+            self.explicit_track_count as i64 + 2 + line
         } else {
-            -(explicit_track_count as i64 + 1 + idx as i64)
-        };
+            line
+        }
+    }
+
+    /// The grid line at a position counted as in [`Self::line_position`]: lines before the
+    /// explicit grid (position `0` and below) are expressed as negative lines
+    fn grid_line_at(&self, position: i64) -> GridLine {
+        let line = if position >= 1 { position } else { position - (self.explicit_track_count as i64 + 2) };
         GridLine::from(line.clamp(i16::MIN as i64, i16::MAX as i64) as i16)
+    }
+
+    /// Resolve the grid line for `<name> N` (`<name>` alone is `<name> 1`).
+    ///
+    /// A positive N counts the lines with the name from the start of the explicit grid, a
+    /// negative one counts them back from its end. If fewer lines carry the name, all implicit
+    /// lines are assumed to carry it: the count goes on into the implicit lines after the
+    /// explicit grid (N > 0) or before it (N < 0). A name no line carries is that case with no
+    /// named lines at all.
+    ///
+    /// <https://drafts.csswg.org/css-grid-2/#line-placement>
+    fn find_line_index(&self, name: &S, idx: i32, end: GridAreaEnd) -> GridLine {
+        // An index of 0 is used to represent "no index specified".
+        let idx = if idx == 0 { 1 } else { idx as i64 };
+        let lines = self.lines_named(name, end);
+        let count = lines.len() as i64;
+        let explicit_line_count = self.explicit_track_count as i64 + 1;
+        let position = if idx > 0 {
+            match lines.get(idx as usize - 1) {
+                Some(&line) => line as i64,
+                None => explicit_line_count + (idx - count),
+            }
+        } else if -idx <= count {
+            lines[(count + idx) as usize] as i64
+        } else {
+            1 - (-idx - count)
+        };
+        self.grid_line_at(position)
+    }
+
+    /// Resolve the grid line that `span <name> N` reaches from the passed line: the Nth line
+    /// with the name after `from` (`end` is [`GridAreaEnd::End`]) or before it
+    /// ([`GridAreaEnd::Start`]), counting outward from `from`.
+    ///
+    /// If fewer lines carry the name, the implicit lines on the side of the explicit grid the
+    /// search goes towards are assumed to carry it (those beyond `from`, when `from` is itself
+    /// already past the explicit grid).
+    ///
+    /// <https://drafts.csswg.org/css-grid-2/#grid-placement-span-int>
+    fn find_span_line(&self, name: &S, idx: u16, end: GridAreaEnd, from: GridLine) -> GridLine {
+        let idx = idx.max(1) as i64;
+        let from = self.line_position(from);
+        let lines = self.lines_named(name, end);
+        let position = match end {
+            GridAreaEnd::End => {
+                let after = &lines[lines.partition_point(|&line| line as i64 <= from)..];
+                match after.get(idx as usize - 1) {
+                    Some(&line) => line as i64,
+                    None => from.max(self.explicit_track_count as i64 + 1) + (idx - after.len() as i64),
+                }
+            }
+            GridAreaEnd::Start => {
+                let before = &lines[..lines.partition_point(|&line| (line as i64) < from)];
+                match before.len().checked_sub(idx as usize) {
+                    Some(i) => before[i] as i64,
+                    None => from.min(1) - (idx - before.len() as i64),
+                }
+            }
+        };
+        self.grid_line_at(position)
     }
 }
 
@@ -727,8 +742,89 @@ mod tests {
         );
         assert_eq!(
             resolved_start_line(&resolver, GridPlacement::NamedLine(DefaultCheapStr::from("missing"), i16::MIN)),
-            22_767
+            i16::MIN
         );
+    }
+
+    /// `[s] 97px [m] 213px [m] 71px [e]` in the column axis: three tracks, `m` on lines 2 and 3
+    fn columns_s_m_m_e() -> NamedLineResolver<DefaultCheapStr> {
+        let mut resolver = resolver(3);
+        for (name, line) in [("s", 1), ("m", 2), ("m", 3), ("e", 4)] {
+            upsert_line_name_map(&mut resolver.column_lines, DefaultCheapStr::from(name), line);
+        }
+        resolver
+    }
+
+    fn resolved_columns(
+        resolver: &NamedLineResolver<DefaultCheapStr>,
+        start: GridPlacement<DefaultCheapStr>,
+        end: GridPlacement<DefaultCheapStr>,
+    ) -> (i16, i16) {
+        let resolved = resolver.resolve_column_names(&Line { start, end });
+        match (resolved.start, resolved.end) {
+            (GenericGridPlacement::Line(start), GenericGridPlacement::Line(end)) => (start.as_i16(), end.as_i16()),
+            other => panic!("expected two resolved lines, got {other:?}"),
+        }
+    }
+
+    fn named(name: &str, idx: i16) -> GridPlacement<DefaultCheapStr> {
+        GridPlacement::NamedLine(DefaultCheapStr::from(name), idx)
+    }
+
+    fn named_span(name: &str, idx: u16) -> GridPlacement<DefaultCheapStr> {
+        GridPlacement::NamedSpan(DefaultCheapStr::from(name), idx)
+    }
+
+    fn line(line: i16) -> GridPlacement<DefaultCheapStr> {
+        GridPlacement::Line(GridLine::from(line))
+    }
+
+    /// A negative index past the named lines counts on into the implicit lines *before* the
+    /// explicit grid (css-grid-2 §8.3): with three tracks, `-5` is the line before line 1
+    /// and `-6` the one before that.
+    #[test]
+    fn negative_index_past_the_named_lines_is_before_the_grid() {
+        let resolver = columns_s_m_m_e();
+        // Two `m` lines: `m -3` is one implicit line before line 1, `m -4` two
+        assert_eq!(resolved_start_line(&resolver, named("m", -3)), -5);
+        assert_eq!(resolved_start_line(&resolver, named("m", -4)), -6);
+        // Within the named lines, unchanged
+        assert_eq!(resolved_start_line(&resolver, named("m", -1)), 3);
+        assert_eq!(resolved_start_line(&resolver, named("m", -2)), 2);
+        // A name no line carries: every implicit line carries it
+        assert_eq!(resolved_start_line(&resolver, named("nosuch", -1)), -5);
+        assert_eq!(resolved_start_line(&resolver, named("nosuch", -2)), -6);
+        assert_eq!(resolved_start_line(&resolver, named("nosuch", 1)), 5);
+        // Positive past the named lines: after the grid, unchanged
+        assert_eq!(resolved_start_line(&resolver, named("m", 3)), 5);
+    }
+
+    /// `span <name> N / <line>` counts back from the end line, so the nearest line is the first
+    #[test]
+    fn span_name_before_a_line_counts_back_from_it() {
+        let resolver = columns_s_m_m_e();
+        assert_eq!(resolved_columns(&resolver, named_span("m", 1), named("e", 0)), (3, 4));
+        assert_eq!(resolved_columns(&resolver, named_span("m", 2), named("e", 0)), (2, 4));
+        // Past the named lines: implicit lines before the grid
+        assert_eq!(resolved_columns(&resolver, named_span("m", 3), named("e", 0)), (-5, 4));
+        // A negative end line: `-1` is line 4, `-2` line 3
+        assert_eq!(resolved_columns(&resolver, named_span("m", 1), line(-1)), (3, -1));
+        assert_eq!(resolved_columns(&resolver, named_span("m", 1), line(-2)), (2, -2));
+        // An end line before the grid: every line before it is implicit and carries the name
+        assert_eq!(resolved_columns(&resolver, named_span("m", 1), line(-6)), (-7, -6));
+    }
+
+    /// `<line> / span <name> N` counts on from the start line
+    #[test]
+    fn span_name_after_a_line_counts_on_from_it() {
+        let resolver = columns_s_m_m_e();
+        // A negative start line: `-4` is line 1, `-3` line 2
+        assert_eq!(resolved_columns(&resolver, line(-4), named_span("m", 1)), (-4, 2));
+        assert_eq!(resolved_columns(&resolver, line(-3), named_span("m", 1)), (-3, 3));
+        // Past the named lines: implicit lines after the grid
+        assert_eq!(resolved_columns(&resolver, line(2), named_span("m", 3)), (2, 6));
+        // A start line already past the grid: the lines after it
+        assert_eq!(resolved_columns(&resolver, line(6), named_span("nosuch", 1)), (6, 7));
     }
 
     #[test]
