@@ -1,11 +1,11 @@
 //! This module is not required for spec compliance, but is used as a performance optimisation
 //! to reduce the number of allocations required when creating a grid.
 use crate::geometry::Line;
-use crate::style::{GenericGridPlacement, GridPlacement};
+use crate::style::{GenericGridPlacement, GridPlacement, NonNamedGridPlacement};
 use crate::{CheapCloneStr, GridItemStyle};
 use core::cmp::{max, min};
 
-use super::types::TrackCounts;
+use super::types::{NamedLineResolver, TrackCounts};
 use super::{OriginZeroLine, MAX_OZ_LINE, MIN_OZ_LINE};
 
 /// Estimate the number of rows and columns in the grid
@@ -20,11 +20,12 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
     explicit_col_count: u16,
     explicit_row_count: u16,
     child_styles_iter: impl Iterator<Item = S>,
+    named_line_resolver: Option<&NamedLineResolver<S::CustomIdent>>,
 ) -> (TrackCounts, TrackCounts) {
     // Iterate over children, producing an estimate of the min and max grid lines (in origin-zero coordinates where)
     // along with the span of each item
     let (col_min, col_max, col_max_span, row_min, row_max, row_max_span) =
-        get_known_child_positions(child_styles_iter, explicit_col_count, explicit_row_count);
+        get_known_child_positions(child_styles_iter, explicit_col_count, explicit_row_count, named_line_resolver);
 
     // Compute *track* count estimates for each axis from:
     //   - The explicit track counts
@@ -65,12 +66,20 @@ fn get_known_child_positions<'a, S: GridItemStyle + 'a>(
     children_iter: impl Iterator<Item = S>,
     explicit_col_count: u16,
     explicit_row_count: u16,
+    named_line_resolver: Option<&NamedLineResolver<S::CustomIdent>>,
 ) -> (OriginZeroLine, OriginZeroLine, u16, OriginZeroLine, OriginZeroLine, u16) {
     let (mut col_min, mut col_max, mut col_max_span) = (OriginZeroLine(0), OriginZeroLine(0), 0);
     let (mut row_min, mut row_max, mut row_max_span) = (OriginZeroLine(0), OriginZeroLine(0), 0);
     children_iter.for_each(|child_style| {
-        let col_line = child_style.grid_column();
-        let row_line = child_style.grid_row();
+        let mut col_line = child_style.grid_column();
+        let mut row_line = child_style.grid_row();
+        // A named line can resolve outside the explicit grid (a missing name, or an index past the
+        // named lines), and an item placed by one must widen the implicit grid like a numbered line
+        // does: the auto-placement cursor starts at the implicit grid's start line
+        if let Some(resolver) = named_line_resolver {
+            col_line = with_names_resolved(col_line, |line| resolver.resolve_column_names(line));
+            row_line = with_names_resolved(row_line, |line| resolver.resolve_row_names(line));
+        }
 
         // Note: that the children reference the lines in between (and around) the tracks not tracks themselves,
         // and thus we must subtract 1 to get an accurate estimate of the number of tracks
@@ -88,6 +97,23 @@ fn get_known_child_positions<'a, S: GridItemStyle + 'a>(
     });
 
     (col_min, col_max, col_max_span, row_min, row_max, row_max_span)
+}
+
+/// The placement with its named lines and spans resolved to numbered ones (unchanged if it has none)
+fn with_names_resolved<S: CheapCloneStr>(
+    line: Line<GridPlacement<S>>,
+    resolve: impl Fn(&Line<GridPlacement<S>>) -> Line<NonNamedGridPlacement>,
+) -> Line<GridPlacement<S>> {
+    let named =
+        |placement: &GridPlacement<S>| matches!(placement, GridPlacement::NamedLine(..) | GridPlacement::NamedSpan(..));
+    if !named(&line.start) && !named(&line.end) {
+        return line;
+    }
+    resolve(&line).map(|placement| match placement {
+        GenericGridPlacement::Auto => GridPlacement::Auto,
+        GenericGridPlacement::Line(line) => GridPlacement::Line(line),
+        GenericGridPlacement::Span(span) => GridPlacement::Span(span),
+    })
 }
 
 /// Helper function for `compute_grid_size_estimate`
@@ -216,7 +242,7 @@ mod tests {
                 (line(-4), auto(), line(-2), auto()).into_grid_child(),
             ];
             let (inline, block) =
-                compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles.iter());
+                compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles.iter(), None);
             assert_eq!(inline.negative_implicit, 0);
             assert_eq!(inline.explicit, explicit_col_count);
             assert_eq!(inline.positive_implicit, 0);
@@ -234,7 +260,7 @@ mod tests {
                 (line(4), auto(), line(3), auto()).into_grid_child(),
             ];
             let (inline, block) =
-                compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles.iter());
+                compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles.iter(), None);
             assert_eq!(inline.negative_implicit, 1);
             assert_eq!(inline.explicit, explicit_col_count);
             assert_eq!(inline.positive_implicit, 0);

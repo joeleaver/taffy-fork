@@ -433,7 +433,8 @@ mod tests {
             // Setup test
             let children_iter = || children.iter().map(|(index, style, _)| (*index, NodeId::from(*index), style));
             let child_styles_iter = children.iter().map(|(_, style, _)| style);
-            let estimated_sizes = compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles_iter);
+            let estimated_sizes =
+                compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles_iter, None);
             let mut items = Vec::new();
             let mut cell_occupancy_matrix =
                 CellOccupancyMatrix::with_track_counts(estimated_sizes.0, estimated_sizes.1);
@@ -673,6 +674,7 @@ mod tests {
                 explicit_col_count,
                 explicit_row_count,
                 children.iter().map(|(_, style)| style),
+                None,
             );
             let mut items = Vec::new();
             let mut cell_occupancy_matrix =
